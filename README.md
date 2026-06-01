@@ -32,8 +32,9 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 
 | 配置项 | 功能 | 默认值 | 接口 |
 |--------|------|--------|------|
-| `grok_image_model` | 文生图 | `grok-imagine-1.0` | `/v1/images/generations` |
-| `grok_edit_model` | 图生图 | `grok-imagine-1.0-edit` | `/v1/images/edits` |
+| `grok_image_model` | 文生图 | `grok-imagine-image-quality` | `/v1/images/generations` |
+| `grok_edit_model` | 图生图 | `grok-imagine-image-quality` | `/v1/images/edits` |
+| `grok_image_resolution` | 图片分辨率 | `2k` | `/v1/images/generations` / `/v1/images/edits` |
 | `grok_video_model` | 生视频 | `grok-imagine-1.0-video` | `/v1/chat/completions` |
 | `grok_search_model` | 对话/搜索 | `grok-4-fast` | `/v1/chat/completions` |
 
@@ -43,8 +44,9 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 
 | 模型 | 类型 | 说明 |
 |------|------|------|
-| `grok-imagine-1.0` | 图像生成 | 标准图像生成 |
-| `grok-imagine-1.0-edit` | 图像编辑 | 基于参考图编辑 |
+| `grok-imagine-image-quality` | 图像生成/编辑 | 官方高质量图片模型 |
+| `grok-imagine-image` | 图像生成/编辑 | 官方图片模型 |
+| `grok-imagine-1.0` / `grok-imagine-1.0-edit` | 图像生成/编辑 | 兼容部分第三方代理 |
 | `grok-imagine-1.0-video` | 视频生成 | 图片转视频 |
 | `grok-3` / `grok-4` / `grok-4-fast` | 对话+搜索 | 支持对话和联网搜索 |
 
@@ -157,7 +159,7 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 | 功能 | 接口路径 | 请求格式 |
 |------|----------|----------|
 | 文生图 | `POST /v1/images/generations` | JSON |
-| 图生图 | `POST /v1/images/edits` | multipart/form-data |
+| 图生图 | `POST /v1/images/edits` | JSON |
 | 图生视频 | `POST /v1/chat/completions` | JSON (stream) |
 | 对话/搜索 | `POST /v1/chat/completions` | JSON |
 
@@ -166,7 +168,7 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 1. **API 兼容性**：本插件兼容 xAI 官方 API 及 grok2api 等第三方代理服务
 2. **模型名称**：不同 API 提供商支持的模型可能不同，请根据实际情况配置
 3. **图片格式**：支持 PNG、JPG、WEBP、GIF、BMP 格式
-4. **合法尺寸**：像素格式 `1024x1024`、`1024x1792`、`1280x720`、`1792x1024`、`720x1280`；比例格式 `1:1`、`2:3`、`3:2`、`9:16`、`16:9`
+4. **图片比例**：用户可输入像素格式 `1024x1024`、`1024x1792`、`1280x720`、`1792x1024`、`720x1280`，也可直接输入官方比例 `1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`、`2:1`、`1:2`、`19.5:9`、`9:19.5`、`20:9`、`9:20`、`auto`
 5. **超时设置**：图片生成 120 秒，视频生成 300 秒，对话/搜索默认 60 秒
 6. **文件保存**：开启 `save_media` 后，文件保存在插件数据目录的 `images/` 和 `videos/` 子目录
 7. **LLM Tool**：对话/搜索功能可作为 LLM Tool 被其他插件或 Agent 调用

@@ -13,15 +13,25 @@
     },
     "grok_image_model": {
         "description": "文生图模型",
-        "hint": "图像生成模型，默认 grok-imagine-1.0",
+        "hint": "图像生成模型，默认 grok-imagine-image-quality",
         "type": "string",
-        "default": "grok-imagine-1.0"
+        "default": "grok-imagine-image-quality"
     },
     "grok_edit_model": {
         "description": "图生图模型",
-        "hint": "图像编辑模型，默认 grok-imagine-1.0-edit",
+        "hint": "图像编辑模型，默认 grok-imagine-image-quality",
         "type": "string",
-        "default": "grok-imagine-1.0-edit"
+        "default": "grok-imagine-image-quality"
+    },
+    "grok_image_resolution": {
+        "description": "图片分辨率",
+        "hint": "xAI Imagine 图片生成/编辑分辨率，默认 2k",
+        "type": "string",
+        "options": [
+            "1k",
+            "2k"
+        ],
+        "default": "2k"
     },
     "grok_video_model": {
         "description": "视频模型",
