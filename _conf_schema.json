@@ -11,6 +11,34 @@
         "type": "string",
         "default": ""
     },
+    "grok_search_model": {
+        "description": "对话/搜索模型",
+        "hint": "默认 grok-4-fast",
+        "type": "string",
+        "default": "grok-4-fast"
+    },
+    "grok_image_backend_type": {
+        "description": "生图后端类型",
+        "hint": "xAI 使用官方 JSON 请求；grok2api 使用 chenyme/grok2api 兼容请求",
+        "type": "string",
+        "options": [
+            "xAI",
+            "grok2api"
+        ],
+        "default": "xAI"
+    },
+    "grok_image_api_url": {
+        "description": "生图 API 地址",
+        "hint": "可选；为空继承全局 Grok API 地址。填写基础 URL，如 https://api.x.ai 或第三方代理地址",
+        "type": "string",
+        "default": ""
+    },
+    "grok_image_api_key": {
+        "description": "生图 API 密钥",
+        "hint": "可选；为空继承全局 Grok API 密钥",
+        "type": "string",
+        "default": ""
+    },
     "grok_image_model": {
         "description": "文生图模型",
         "hint": "图像生成模型，默认 grok-imagine-image-quality",
@@ -33,17 +61,102 @@
         ],
         "default": "2k"
     },
+    "grok_video_backend_type": {
+        "description": "视频后端类型",
+        "hint": "xAI 使用官方视频生成/编辑/扩展接口；grok2api 使用 /v1/videos 兼容接口，仅支持生视频",
+        "type": "string",
+        "options": [
+            "xAI",
+            "grok2api"
+        ],
+        "default": "xAI"
+    },
+    "grok2api_video_preset": {
+        "description": "grok2api 视频模式",
+        "hint": "仅 grok2api 视频后端生效；会作为 /v1/videos 的 preset 发送，默认 custom",
+        "type": "string",
+        "options": [
+            "custom",
+            "fun",
+            "normal",
+            "spicy"
+        ],
+        "default": "custom"
+    },
+    "grok_video_api_url": {
+        "description": "视频 API 地址",
+        "hint": "可选；为空继承全局 Grok API 地址。填写基础 URL，如 https://api.x.ai 或第三方代理地址",
+        "type": "string",
+        "default": ""
+    },
+    "grok_video_api_key": {
+        "description": "视频 API 密钥",
+        "hint": "可选；为空继承全局 Grok API 密钥",
+        "type": "string",
+        "default": ""
+    },
     "grok_video_model": {
         "description": "视频模型",
-        "hint": "视频生成模型，默认 grok-imagine-1.0-video",
+        "hint": "视频生成模型，默认 grok-imagine-video",
         "type": "string",
-        "default": "grok-imagine-1.0-video"
+        "default": "grok-imagine-video"
     },
-    "grok_search_model": {
-        "description": "对话/搜索模型",
-        "hint": "默认 grok-4-fast",
+    "grok_video_edit_model": {
+        "description": "视频编辑模型",
+        "hint": "视频编辑模型，默认 grok-imagine-video",
         "type": "string",
-        "default": "grok-4-fast"
+        "default": "grok-imagine-video"
+    },
+    "grok_video_extension_model": {
+        "description": "视频扩展模型",
+        "hint": "视频扩展模型，默认 grok-imagine-video",
+        "type": "string",
+        "default": "grok-imagine-video"
+    },
+    "grok_video_resolution": {
+        "description": "视频分辨率",
+        "hint": "xAI 支持 480p/720p/1080p；grok2api 支持 480p/720p，不支持时自动回退 720p",
+        "type": "string",
+        "options": [
+            "480p",
+            "720p",
+            "1080p"
+        ],
+        "default": "720p"
+    },
+    "grok_video_aspect_ratio": {
+        "description": "视频默认比例",
+        "hint": "文生视频/参考图视频默认 aspect_ratio；选 null 表示发送 JSON null；单图图生视频未显式输入比例时不传，保持原图比例",
+        "type": "string",
+        "options": [
+            "null",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3"
+        ],
+        "default": "16:9"
+    },
+    "grok_video_duration": {
+        "description": "视频默认时长",
+        "hint": "xAI 视频生成 duration，文生/单图支持 1-15 秒，参考图视频支持 1-10 秒，默认 8 秒",
+        "type": "int",
+        "default": 8
+    },
+    "grok_video_output_upload_url": {
+        "description": "视频输出上传 URL",
+        "hint": "可选；填写后作为官方 output.upload_url 随视频生成/编辑/扩展请求发送",
+        "type": "string",
+        "default": ""
+    },
+    "grok_video_extension_duration": {
+        "description": "视频扩展时长",
+        "hint": "视频扩展片段时长，支持 1-10 秒，默认 6 秒",
+        "type": "int",
+        "default": 6
     },
     "grok_search_mode": {
         "description": "搜索模式",
@@ -109,28 +222,36 @@
         "description": "用户白名单",
         "hint": "允许使用此插件的用户ID列表，为空则不限制",
         "type": "list",
-        "items": {"type": "string"},
+        "items": {
+            "type": "string"
+        },
         "default": []
     },
     "user_blacklist": {
         "description": "用户黑名单",
         "hint": "禁止使用此插件的用户ID列表",
         "type": "list",
-        "items": {"type": "string"},
+        "items": {
+            "type": "string"
+        },
         "default": []
     },
     "group_whitelist": {
         "description": "群聊白名单",
         "hint": "允许使用此插件的群聊ID列表，为空则不限制",
         "type": "list",
-        "items": {"type": "string"},
+        "items": {
+            "type": "string"
+        },
         "default": []
     },
     "group_blacklist": {
         "description": "群聊黑名单",
         "hint": "禁止使用此插件的群聊ID列表",
         "type": "list",
-        "items": {"type": "string"},
+        "items": {
+            "type": "string"
+        },
         "default": []
     }
 }

@@ -1,6 +1,6 @@
 # Grok AI 助手
 
-Grok 全能插件：文生图、图生图、图生视频、智能对话（自动联网）、LLM Tool 调用，一站式 AI 多媒体体验。
+Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频扩展、智能对话（自动联网）、LLM Tool 调用，一站式 AI 多媒体体验。
 
 ## 功能
 
@@ -8,7 +8,9 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 |------|------|------|
 | 文生图 | `/grok生图 [数量] [尺寸] 提示词` | 根据文字描述生成图片 |
 | 图生图 | `/grok生图 提示词 + 图片` | 基于参考图片进行编辑/重绘 |
-| 生视频 | `/grok视频 [尺寸] [时长] 提示词 [+图片可选]` | 支持文生视频与图生视频 |
+| 生视频 | `/grok视频 [比例|null] [时长] [分辨率] [提示词] [+图片可选]` | 支持文生视频、图生视频与参考图视频 |
+| 视频编辑 | `/grok视频编辑 [视频URL] 提示词 [+视频可选]` | 基于输入视频做内容编辑 |
+| 视频扩展 | `/grok视频扩展 [时长] [视频URL] 提示词 [+视频可选]` | 继续生成后续片段 |
 | 智能对话 | `/grok 内容 [+图片/语音/文件可选]` | 与 Grok 对话，自动判断是否需要联网 |
 | 帮助 | `/grok帮助` | 查看使用说明 |
 
@@ -18,10 +20,14 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 
 | 配置项 | 说明 | 示例 |
 |--------|------|------|
-| `grok_api_url` | API 基础地址 | `https://api.x.ai` |
-| `grok_api_key` | API 密钥 | 你的 xAI API Key |
+| `grok_api_url` | 全局 API 基础地址 | `https://api.x.ai` |
+| `grok_api_key` | 全局 API 密钥 | 你的 xAI API Key |
+| `grok_image_api_url` | 生图 API 基础地址；为空继承全局地址 | `https://api.x.ai` |
+| `grok_image_api_key` | 生图 API 密钥；为空继承全局密钥 | 生图专用 Key |
+| `grok_video_api_url` | 视频 API 基础地址；为空继承全局地址 | `https://api.x.ai` |
+| `grok_video_api_key` | 视频 API 密钥；为空继承全局密钥 | 视频专用 Key |
 
-**URL 配置说明**：只需填写基础 URL，插件会自动拼接正确的接口路径。
+**URL 配置说明**：只需填写基础 URL，插件会自动拼接正确的接口路径。对话/搜索始终使用全局 `grok_api_url` / `grok_api_key`；生图和视频优先使用各自专用配置，专用配置为空时才继承全局配置。
 
 支持的 URL 格式（以下均可正常工作）：
 - `https://api.x.ai`
@@ -32,11 +38,23 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 
 | 配置项 | 功能 | 默认值 | 接口 |
 |--------|------|--------|------|
+| `grok_image_backend_type` | 生图后端类型 | `xAI` | `xAI` / `grok2api` |
 | `grok_image_model` | 文生图 | `grok-imagine-image-quality` | `/v1/images/generations` |
 | `grok_edit_model` | 图生图 | `grok-imagine-image-quality` | `/v1/images/edits` |
 | `grok_image_resolution` | 图片分辨率 | `2k` | `/v1/images/generations` / `/v1/images/edits` |
-| `grok_video_model` | 生视频 | `grok-imagine-1.0-video` | `/v1/chat/completions` |
+| `grok_video_backend_type` | 视频后端类型 | `xAI` | `xAI` / `grok2api` |
+| `grok2api_video_preset` | grok2api 视频模式 | `custom` | `custom` / `fun` / `normal` / `spicy` |
+| `grok_video_model` | 生视频 | `grok-imagine-video` | `/v1/videos/generations` |
+| `grok_video_edit_model` | 视频编辑 | `grok-imagine-video` | `/v1/videos/edits` |
+| `grok_video_extension_model` | 视频扩展 | `grok-imagine-video` | `/v1/videos/extensions` |
+| `grok_video_resolution` | 视频分辨率 | `720p` | `/v1/videos/generations` |
+| `grok_video_aspect_ratio` | 视频默认比例 | `16:9` | `/v1/videos/generations`，可选 `null` 发送 JSON null |
+| `grok_video_duration` | 视频默认时长 | `8` | `/v1/videos/generations` |
+| `grok_video_output_upload_url` | 视频输出上传 URL | 空 | `/v1/videos/*` |
+| `grok_video_extension_duration` | 视频扩展时长 | `6` | `/v1/videos/extensions` |
 | `grok_search_model` | 对话/搜索 | `grok-4-fast` | `/v1/chat/completions` |
+
+**后端说明**：图片和视频后端在插件 UI 中分别配置。`xAI` 使用官方 JSON 接口；`grok2api` 使用 [chenyme/grok2api](https://github.com/chenyme/grok2api) 的兼容请求格式。对话/搜索不受这两个后端选择影响。
 
 **模型说明**：所有模型均通过配置项读取，代码中的默认值仅作为备用。你可以根据 API 提供商支持的模型自行修改。
 
@@ -47,7 +65,8 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 | `grok-imagine-image-quality` | 图像生成/编辑 | 官方高质量图片模型 |
 | `grok-imagine-image` | 图像生成/编辑 | 官方图片模型 |
 | `grok-imagine-1.0` / `grok-imagine-1.0-edit` | 图像生成/编辑 | 兼容部分第三方代理 |
-| `grok-imagine-1.0-video` | 视频生成 | 图片转视频 |
+| `grok-imagine-video` | 视频生成/编辑/扩展 | 官方视频模型 |
+| `grok-imagine-1.0-video` | 视频生成 | 兼容部分第三方代理 |
 | `grok-3` / `grok-4` / `grok-4-fast` | 对话+搜索 | 支持对话和联网搜索 |
 
 ### 对话/搜索配置
@@ -105,15 +124,15 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 发送图片或引用图片，附带命令：
 ```
 /grok生图 把背景换成森林
-/grok生图 转换为油画风格
+/grok生图 3:2 转换为油画风格
 /grok生图 4 添加下雪效果
 ```
 
 说明：
 - 自动读取原图分辨率，并映射到最近合法尺寸
-- 支持数量参数
-- 目标尺寸始终根据原图自动匹配，忽略手动尺寸
-- 附带两张图片时，第 2 张会作为局部重绘蒙版
+- 支持数量参数，最多 10 张
+- 显式输入比例/尺寸时会覆盖自动匹配结果；不输入时使用最接近原图的合法比例
+- 最多读取 3 张图片；多张图片会以官方 `images` 字段一起作为参考输入
 
 ### 生视频（文生/图生）
 
@@ -122,17 +141,41 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 /grok视频 让画面动起来
 /grok视频 10 夜晚海边的慢镜头
 /grok视频 3:2 夜晚海边的慢镜头
-/grok视频 16:9 6 让人物眨眼微笑
-/grok视频 1792x1024 添加飘落的樱花
+/grok视频 16:9 6 720p 让人物眨眼微笑
+/grok视频 null 8 720p 抽象粒子缓慢旋转
+/grok视频 1280x720 12 添加飘落的樱花
 ```
 
 说明：
-- 文生视频默认尺寸：`3:2`（1792x1024）
-- 文生视频默认时长：`6` 秒（可选 `10` / `15`）
-- 尺寸支持比例格式（如 `3:2`、`16:9`）或像素格式（如 `1792x1024`）
-- 图生视频自动读取原图分辨率，并匹配最近合法尺寸
-- 固定 `720p` 输出（脚本内固定）
+- 文生视频/参考图视频默认比例：读取 UI 配置 `grok_video_aspect_ratio`，默认 `16:9`
+- `aspect_ratio` 对齐官方 `null | string`：配置或命令输入 `null` / `none` / `auto` / `不传` 时发送 JSON `null`
+- 文生视频/单图图生视频默认时长：读取 UI 配置 `grok_video_duration`，默认 `8` 秒；可输入 `1`-`15` 秒覆盖
+- 比例支持：`16:9` / `9:16` / `1:1` / `4:3` / `3:4` / `3:2` / `2:3`
+- 支持比例格式（如 `3:2`、`16:9`）或可换算为官方比例的像素格式（如 `1280x720`）
+- 分辨率支持：`480p` / `720p` / `1080p`，默认读取 UI 配置 `grok_video_resolution`
+- xAI 单图图生视频使用官方 I2V 模式：图片作为视频首帧，默认不传 `aspect_ratio` 保持原图比例；显式输入比例/尺寸时覆盖，显式输入 `null` 时发送 JSON `null`
+- 单图图生视频的提示词可省略；文生视频与参考图视频仍需要提示词
+- 多图使用官方 R2V `reference_images` 模式：图片作为主体/风格/场景参考，不作为首帧；最多 7 张，时长最多 10 秒；单张图片可加 `参考图` 强制使用 R2V
+- grok2api 生视频统一走 `/v1/videos` 的 `input_reference[]` 字段；上游会按参考图视频语义处理上传图片，不等同于 xAI 的官方首帧 `image` 字段
+- 图片输入支持消息附件、`file_id:xxx`，或 `image_url:https://...`
+- 使用官方异步接口：先创建任务，再轮询获取视频 URL
 - 自动启用增强策略（高细节、低噪点、时序稳定）
+
+### 视频编辑 / 扩展
+
+```
+/grok视频编辑 给人物添加银色项链 +视频
+/grok视频扩展 6 镜头继续向前推进 +视频
+```
+
+说明：
+- 视频编辑：提交原视频和提示词，接口为 `/v1/videos/edits`
+- 视频扩展：提交原视频、提示词和扩展时长，接口为 `/v1/videos/extensions`
+- 使用 `grok2api` 视频后端时，当前仅支持生视频；视频编辑和视频扩展会提示切换到 `xAI` 后端
+- 视频输入支持消息附件、mp4 直链、可下载的视频 URL，或 `file_id:xxx`
+- 可选配置 `grok_video_output_upload_url` 会作为官方 `output.upload_url` 发送
+- 生视频/视频编辑会自动把发送者 ID 作为官方 `user` 字段发送；视频扩展接口官方文档未列出 `user`
+- 两者都走异步任务，先返回 `request_id`，再轮询结果
 
 ### 智能对话
 
@@ -154,22 +197,55 @@ Grok 全能插件：文生图、图生图、图生视频、智能对话（自动
 
 ## API 接口对照
 
-本插件参考 [grok2api](https://github.com/chenyme/grok2api) 项目的接口规范：
+图片和视频请求按 UI 中选择的后端分发到不同模块；插件不再暴露视频自定义路径配置。
+
+### xAI 官方接口
 
 | 功能 | 接口路径 | 请求格式 |
 |------|----------|----------|
-| 文生图 | `POST /v1/images/generations` | JSON |
-| 图生图 | `POST /v1/images/edits` | JSON |
-| 图生视频 | `POST /v1/chat/completions` | JSON (stream) |
+| 文生图 | `POST /v1/images/generations` | JSON，发送 `aspect_ratio`、`resolution` |
+| 图生图 | `POST /v1/images/edits` | JSON，发送 `image` / `images`、`resolution`，仅在显式输入比例时发送 `aspect_ratio` |
+| 生视频 | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` | JSON |
+| 视频编辑 | `POST /v1/videos/edits` + `GET /v1/videos/{request_id}` | JSON |
+| 视频扩展 | `POST /v1/videos/extensions` + `GET /v1/videos/{request_id}` | JSON |
 | 对话/搜索 | `POST /v1/chat/completions` | JSON |
+
+### grok2api 兼容接口
+
+| 功能 | 接口路径 | 请求格式 |
+|------|----------|----------|
+| 文生图 | `POST /v1/images/generations` | JSON，发送 `size`、`response_format` |
+| 图生图 | `POST /v1/images/edits` | multipart，发送 `image[]`、`size`、`response_format`；当前编辑尺寸固定为 `1024x1024` |
+| 生视频 | `POST /v1/videos` + `GET /v1/videos/{video_id}` + `GET /v1/videos/{video_id}/content` | multipart，发送 `seconds`、`size`、`resolution_name`、`preset`、可选 `input_reference[]` |
+| 视频编辑 | 不支持 | grok2api 文档未提供视频编辑接口 |
+| 视频扩展 | 不支持 | grok2api 文档未提供视频扩展接口 |
+| 对话/搜索 | `POST /v1/chat/completions` | JSON，不受图片/视频后端选择影响 |
+
+### 官方视频字段对照
+
+| 官方字段 | `/v1/videos/generations` 插件支持情况 |
+|----------|----------------------------------------|
+| `model` | 由 `grok_video_model` 配置，默认 `grok-imagine-video` |
+| `prompt` | 文生视频/参考图视频必填；单图图生视频可省略 |
+| `image` | I2V 单图首帧模式使用，支持消息图片、`file_id:xxx`、`image_url:`；默认按官方 object 结构发送，遇到别名层要求 string 时自动压平成 URL/data URL 重试 |
+| `reference_images` | R2V 参考图模式使用，支持 1-7 个 `file_id` / URL / data URL；默认按官方 object 数组发送，遇到别名层要求 string 数组时自动压平重试 |
+| `aspect_ratio` | 支持官方 `null` / `1:1` / `16:9` / `9:16` / `4:3` / `3:4` / `3:2` / `2:3`；单图未显式输入时不传 |
+| `duration` | 由 `grok_video_duration` 配置或命令覆盖；T2V/I2V 支持 `1`-`15` 秒，R2V 支持 `1`-`10` 秒；插件使用官方主字段 `duration`，不使用兼容别名 `seconds` |
+| `resolution` | 由 `grok_video_resolution` 配置或命令覆盖，支持 `480p` / `720p` / `1080p` |
+| `output.upload_url` | 由 `grok_video_output_upload_url` 配置，生成/编辑/扩展都会发送 |
+| `user` | 生视频/视频编辑发送当前用户 ID；视频扩展官方未列出 `user`，插件不发送 |
+
+视频编辑接口发送 `model`、`prompt`、`video`、可选 `output.upload_url`、可选 `user`。视频扩展接口发送 `model`、`prompt`、`video`、`duration`、可选 `output.upload_url`。
+
+grok2api 视频接口的 `preset` 由 `grok2api_video_preset` 配置，默认 `custom`，可选 `fun`、`normal`、`spicy`。
 
 ## 注意事项
 
 1. **API 兼容性**：本插件兼容 xAI 官方 API 及 grok2api 等第三方代理服务
 2. **模型名称**：不同 API 提供商支持的模型可能不同，请根据实际情况配置
-3. **图片格式**：支持 PNG、JPG、WEBP、GIF、BMP 格式
+3. **图片格式**：生图/图生图支持 PNG、JPG、WEBP、GIF、BMP；视频生成的 `image` / `reference_images` 按官方要求应使用 JPEG、PNG 或 WEBP
 4. **图片比例**：用户可输入像素格式 `1024x1024`、`1024x1792`、`1280x720`、`1792x1024`、`720x1280`，也可直接输入官方比例 `1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`、`2:1`、`1:2`、`19.5:9`、`9:19.5`、`20:9`、`9:20`、`auto`
-5. **超时设置**：图片生成 120 秒，视频生成 300 秒，对话/搜索默认 60 秒
+5. **超时设置**：图片生成 120 秒，视频生成/编辑/扩展轮询 900 秒，对话/搜索默认 60 秒
 6. **文件保存**：开启 `save_media` 后，文件保存在插件数据目录的 `images/` 和 `videos/` 子目录
 7. **LLM Tool**：对话/搜索功能可作为 LLM Tool 被其他插件或 Agent 调用
 8. **Skill 模式**：开启后禁用 LLM Tool，改为通过 Skill 钩子响应
