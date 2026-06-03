@@ -107,7 +107,7 @@ async def generate_image(
     image_resolution = plugin._get_configured_image_resolution()
     last_error: Optional[str] = None
 
-    for response_format in plugin.IMAGE_RESPONSE_FORMAT_CANDIDATES:
+    for response_format in plugin._get_image_response_format_candidates():
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -169,7 +169,7 @@ async def edit_image(
 
     image_resolution = plugin._get_configured_image_resolution()
     last_error: Optional[str] = None
-    for response_format in plugin.IMAGE_RESPONSE_FORMAT_CANDIDATES:
+    for response_format in plugin._get_image_response_format_candidates():
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,

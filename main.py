@@ -516,6 +516,19 @@ class GrokPlugin(Star):
             or "must be" in err
         )
 
+    def _get_image_response_format_candidates(self) -> Tuple[Optional[str], ...]:
+        """获取图片响应格式候选顺序。默认强制 base64，避免依赖 xAI 图片 CDN。"""
+        mode = str(self.conf.get("grok_image_response_format", "b64_json") or "b64_json").strip().lower()
+        if mode in {"auto", "fallback"}:
+            return self.IMAGE_RESPONSE_FORMAT_CANDIDATES
+        if mode == "url":
+            return ("url",)
+        if mode in {"none", "default", "provider"}:
+            return (None,)
+        if mode not in {"b64_json", "base64"}:
+            logger.warning(f"图片响应格式配置无效: {mode}, 已回退为 b64_json")
+        return ("b64_json",)
+
     @classmethod
     def _is_retryable_status(cls, status_code: int) -> bool:
         """判断状态码是否适合自动重试"""

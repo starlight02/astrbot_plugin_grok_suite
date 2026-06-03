@@ -61,6 +61,17 @@
         ],
         "default": "2k"
     },
+    "grok_image_response_format": {
+        "description": "图片响应格式",
+        "hint": "默认 b64_json，避免依赖 xAI 图片 CDN；auto 会在 base64 不兼容时自动降级 URL",
+        "type": "string",
+        "options": [
+            "b64_json",
+            "auto",
+            "url"
+        ],
+        "default": "b64_json"
+    },
     "grok_video_backend_type": {
         "description": "视频后端类型",
         "hint": "xAI 使用官方视频生成/编辑/扩展接口；grok2api 使用 /v1/videos 兼容接口，仅支持生视频",

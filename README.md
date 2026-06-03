@@ -8,7 +8,7 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 |------|------|------|
 | 文生图 | `/grok生图 [数量] [尺寸] 提示词` | 根据文字描述生成图片 |
 | 图生图 | `/grok生图 提示词 + 图片` | 基于参考图片进行编辑/重绘 |
-| 生视频 | `/grok视频 [比例|null] [时长] [分辨率] [提示词] [+图片可选]` | 支持文生视频、图生视频与参考图视频 |
+| 生视频 | `/grok视频 [比例/null] [时长] [分辨率] [提示词] [+图片可选]` | 支持文生视频、图生视频与参考图视频 |
 | 视频编辑 | `/grok视频编辑 [视频URL] 提示词 [+视频可选]` | 基于输入视频做内容编辑 |
 | 视频扩展 | `/grok视频扩展 [时长] [视频URL] 提示词 [+视频可选]` | 继续生成后续片段 |
 | 智能对话 | `/grok 内容 [+图片/语音/文件可选]` | 与 Grok 对话，自动判断是否需要联网 |
@@ -42,6 +42,7 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | `grok_image_model` | 文生图 | `grok-imagine-image-quality` | `/v1/images/generations` |
 | `grok_edit_model` | 图生图 | `grok-imagine-image-quality` | `/v1/images/edits` |
 | `grok_image_resolution` | 图片分辨率 | `2k` | `/v1/images/generations` / `/v1/images/edits` |
+| `grok_image_response_format` | 图片响应格式 | `b64_json` | `b64_json` / `auto` / `url` |
 | `grok_video_backend_type` | 视频后端类型 | `xAI` | `xAI` / `grok2api` |
 | `grok2api_video_preset` | grok2api 视频模式 | `custom` | `custom` / `fun` / `normal` / `spicy` |
 | `grok_video_model` | 生视频 | `grok-imagine-video` | `/v1/videos/generations` |
@@ -203,8 +204,8 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 
 | 功能 | 接口路径 | 请求格式 |
 |------|----------|----------|
-| 文生图 | `POST /v1/images/generations` | JSON，发送 `aspect_ratio`、`resolution` |
-| 图生图 | `POST /v1/images/edits` | JSON，发送 `image` / `images`、`resolution`，仅在显式输入比例时发送 `aspect_ratio` |
+| 文生图 | `POST /v1/images/generations` | JSON，发送 `aspect_ratio`、`resolution`、`response_format` |
+| 图生图 | `POST /v1/images/edits` | JSON，发送 `image` / `images`、`resolution`、`response_format`，仅在显式输入比例时发送 `aspect_ratio` |
 | 生视频 | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` | JSON |
 | 视频编辑 | `POST /v1/videos/edits` + `GET /v1/videos/{request_id}` | JSON |
 | 视频扩展 | `POST /v1/videos/extensions` + `GET /v1/videos/{request_id}` | JSON |
@@ -236,6 +237,8 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | `user` | 生视频/视频编辑发送当前用户 ID；视频扩展官方未列出 `user`，插件不发送 |
 
 视频编辑接口发送 `model`、`prompt`、`video`、可选 `output.upload_url`、可选 `user`。视频扩展接口发送 `model`、`prompt`、`video`、`duration`、可选 `output.upload_url`。
+
+图片响应格式由 `grok_image_response_format` 控制，默认 `b64_json`，避免依赖 xAI 图片 CDN。选择 `auto` 会保持兼容模式：先请求 `b64_json`，如果后端不支持再尝试 `url`。视频接口当前返回视频 URL，插件会下载后作为本地视频文件发送；如果视频 URL 所在域名无法访问，需要使用可访问的代理/API 地址或配置官方 `output.upload_url`。
 
 grok2api 视频接口的 `preset` 由 `grok2api_video_preset` 配置，默认 `custom`，可选 `fun`、`normal`、`spicy`。
 

@@ -234,6 +234,7 @@ async def _start_video_task(
     alias_compat_tried = False
 
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
+        attempt_started_at = time.monotonic()
         try:
             session = await plugin._ensure_session()
             headers = plugin._get_headers(API_SCOPE)
@@ -249,7 +250,7 @@ async def _start_video_task(
                 api_url,
                 headers=headers,
                 json=request_payload,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=plugin.VIDEO_TIMEOUT),
             ) as resp:
                 text = await resp.text()
                 if resp.status not in (200, 201, 202):
@@ -308,12 +309,27 @@ async def _start_video_task(
                     scene=scene,
                 )
 
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            elapsed = time.monotonic() - attempt_started_at
+            logger.warning(
+                f"[{scene}][xAI] 启动请求第 {attempt + 1}/"
+                f"{plugin.MAX_REQUEST_RETRIES} 次失败，耗时 {elapsed:.1f}s: "
+                f"{e.__class__.__name__}: {e}"
+            )
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
-            last_error = "请求超时，请重试"
+            last_error = (
+                "视频任务启动请求超时或连接中断，未拿到 request_id；"
+                "请检查后端或中间代理是否在创建任务阶段提前断开连接"
+            )
         except Exception as e:
+            elapsed = time.monotonic() - attempt_started_at
+            logger.warning(
+                f"[{scene}][xAI] 启动请求第 {attempt + 1}/"
+                f"{plugin.MAX_REQUEST_RETRIES} 次异常，耗时 {elapsed:.1f}s: "
+                f"{e.__class__.__name__}: {e}"
+            )
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
