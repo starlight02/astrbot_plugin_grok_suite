@@ -76,8 +76,6 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | `grok-imagine-1.0` / `grok-imagine-1.0-edit` | 图像生成/编辑 | 兼容部分第三方代理 |
 | `grok-imagine-video` | 视频生成/编辑/扩展 | 官方视频模型 |
 | `grok-imagine-1.0-video` | 视频生成 | 兼容部分第三方代理 |
-| `gpt-image-1` | OpenAI 图像生成/编辑 | 选择 `OpenAI` 图片后端时的默认 SDK 模型 |
-| `sora-2` | OpenAI 视频生成 | 选择 `OpenAI` 视频后端时的默认 SDK 模型 |
 | `grok-3` / `grok-4` / `grok-4-fast` | 对话+搜索 | 支持对话和联网搜索 |
 
 ### 对话/搜索配置

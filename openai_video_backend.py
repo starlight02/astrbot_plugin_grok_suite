@@ -10,7 +10,6 @@ from astrbot.api import logger
 
 
 API_SCOPE = "video"
-OPENAI_VIDEO_MODEL = "sora-2"
 OPENAI_VIDEO_SECONDS = (4, 8, 12)
 OPENAI_VIDEO_EXTENSION_SECONDS = (4, 8, 12, 16, 20)
 OPENAI_VIDEO_SIZES = ("720x1280", "1280x720", "1024x1792", "1792x1024")
@@ -78,18 +77,15 @@ def _translate_status_error(plugin: Any, scene: str, status: int, error_text: st
     return plugin._translate_error(detail or f"状态码: {status}")
 
 
-def _configured_video_model(plugin: Any, config_key: str, default_model: str) -> str:
+def _configured_video_model(plugin: Any, config_key: str) -> str:
     configured = str(plugin.conf.get(config_key, "") or "").strip()
-    xai_defaults = {
-        getattr(plugin, "DEFAULT_VIDEO_MODEL", ""),
-        getattr(plugin, "DEFAULT_VIDEO_EDIT_MODEL", ""),
-        getattr(plugin, "DEFAULT_VIDEO_EXTENSION_MODEL", ""),
-        "grok-imagine-video",
-        "grok-imagine-1.0-video",
-    }
-    if not configured or configured in xai_defaults:
-        return default_model
-    return configured
+    if configured:
+        return configured
+    default_attr = {
+        "grok_video_edit_model": "DEFAULT_VIDEO_EDIT_MODEL",
+        "grok_video_extension_model": "DEFAULT_VIDEO_EXTENSION_MODEL",
+    }.get(config_key, "DEFAULT_VIDEO_MODEL")
+    return str(getattr(plugin, default_attr, "") or "").strip()
 
 
 def _nearest(value: int, candidates: Sequence[int]) -> int:
@@ -287,7 +283,7 @@ async def generate_video(
     if error:
         return None, error
 
-    model = _configured_video_model(plugin, "grok_video_model", OPENAI_VIDEO_MODEL)
+    model = _configured_video_model(plugin, "grok_video_model")
     requested_seconds = int(video_length or plugin._get_configured_video_duration())
     seconds = _normalize_video_seconds(requested_seconds)
     if seconds != requested_seconds:
@@ -403,8 +399,9 @@ async def edit_video(
     if not prompt.strip():
         return None, "OpenAI 视频编辑需要提示词"
 
-    params = {"prompt": prompt, "video": video_reference}
-    debug_body = [{"name": "prompt", "value": prompt}]
+    model = _configured_video_model(plugin, "grok_video_edit_model")
+    params = {"model": model, "prompt": prompt, "video": video_reference}
+    debug_body = [{"name": "model", "value": model}, {"name": "prompt", "value": prompt}]
     if isinstance(video_reference, tuple):
         filename, data, content_type = video_reference[:3]
         debug_body.append(
@@ -476,8 +473,13 @@ async def extend_video(
             f"已将 {requested_seconds} 秒归一化为 {seconds} 秒"
         )
 
-    params = {"prompt": prompt, "seconds": str(seconds), "video": video_reference}
-    debug_body = [{"name": "prompt", "value": prompt}, {"name": "seconds", "value": str(seconds)}]
+    model = _configured_video_model(plugin, "grok_video_extension_model")
+    params = {"model": model, "prompt": prompt, "seconds": str(seconds), "video": video_reference}
+    debug_body = [
+        {"name": "model", "value": model},
+        {"name": "prompt", "value": prompt},
+        {"name": "seconds", "value": str(seconds)},
+    ]
     if isinstance(video_reference, tuple):
         filename, data, content_type = video_reference[:3]
         debug_body.append(

@@ -7,7 +7,6 @@ from astrbot.api import logger
 
 ImageResult = Tuple[Optional[str], Optional[bytes]]
 API_SCOPE = "image"
-OPENAI_IMAGE_MODEL = "gpt-image-1"
 OPENAI_EDIT_SIZE = "1024x1024"
 OPENAI_GPT_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536")
 OPENAI_GPT_EDIT_SIZES = ("1024x1024", "1536x1024", "1024x1536")
@@ -86,19 +85,11 @@ def _translate_status_error(plugin: Any, scene: str, status: int, error_text: st
     return plugin._translate_error(detail or f"状态码: {status}")
 
 
-def _configured_image_model(plugin: Any, config_key: str, default_model: str) -> str:
+def _configured_image_model(plugin: Any, config_key: str) -> str:
     configured = str(plugin.conf.get(config_key, "") or "").strip()
-    xai_defaults = {
-        getattr(plugin, "DEFAULT_IMAGE_MODEL", ""),
-        getattr(plugin, "DEFAULT_LEGACY_IMAGE_MODEL", ""),
-        getattr(plugin, "DEFAULT_LEGACY_EDIT_MODEL", ""),
-        "grok-imagine-image",
-        "grok-imagine-image-quality",
-        "grok-imagine-image-edit",
-    }
-    if not configured or configured in xai_defaults:
-        return default_model
-    return configured
+    if configured:
+        return configured
+    return str(getattr(plugin, "DEFAULT_IMAGE_MODEL", "") or "").strip()
 
 
 def _parse_size(size: Optional[str]) -> Optional[Tuple[int, int]]:
@@ -208,7 +199,7 @@ async def generate_image(
     if error:
         return [], error
 
-    model = _configured_image_model(plugin, "grok_image_model", OPENAI_IMAGE_MODEL)
+    model = _configured_image_model(plugin, "grok_image_model")
     image_size = _closest_openai_image_size(
         target_size or plugin.DEFAULT_TEXT_IMAGE_SIZE,
         _openai_generate_size_candidates(model),
@@ -291,7 +282,7 @@ async def edit_image(
     if error:
         return [], error
 
-    model = _configured_image_model(plugin, "grok_edit_model", OPENAI_IMAGE_MODEL)
+    model = _configured_image_model(plugin, "grok_edit_model")
     all_image_bytes = [image_bytes]
     for ref_image in reference_images or []:
         if ref_image:

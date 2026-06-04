@@ -42,13 +42,13 @@
     },
     "grok_image_model": {
         "description": "文生图模型",
-        "hint": "图像生成模型，默认 grok-imagine-image-quality",
+        "hint": "图像生成模型；xAI/grok2api/OpenAI 兼容后端都会按此值发送；留空时使用插件全局默认图片模型",
         "type": "string",
         "default": "grok-imagine-image-quality"
     },
     "grok_edit_model": {
         "description": "图生图模型",
-        "hint": "图像编辑模型，默认 grok-imagine-image-quality",
+        "hint": "图像编辑模型；xAI/grok2api/OpenAI 兼容后端都会按此值发送；留空时使用插件全局默认图片模型",
         "type": "string",
         "default": "grok-imagine-image-quality"
     },
@@ -143,19 +143,19 @@
     },
     "grok_video_model": {
         "description": "视频模型",
-        "hint": "视频生成模型，默认 grok-imagine-video",
+        "hint": "视频生成模型；xAI/grok2api/OpenAI 兼容后端都会按此值发送；留空时使用插件全局默认视频模型",
         "type": "string",
         "default": "grok-imagine-video"
     },
     "grok_video_edit_model": {
         "description": "视频编辑模型",
-        "hint": "视频编辑模型，默认 grok-imagine-video",
+        "hint": "视频编辑模型；xAI/OpenAI 兼容后端都会按此值发送；留空时使用插件全局默认视频编辑模型",
         "type": "string",
         "default": "grok-imagine-video"
     },
     "grok_video_extension_model": {
         "description": "视频扩展模型",
-        "hint": "视频扩展模型，默认 grok-imagine-video",
+        "hint": "视频扩展模型；xAI/OpenAI 兼容后端都会按此值发送；留空时使用插件全局默认视频扩展模型",
         "type": "string",
         "default": "grok-imagine-video"
     },
