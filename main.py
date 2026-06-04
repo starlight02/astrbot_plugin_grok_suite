@@ -26,10 +26,19 @@ import astrbot.api.message_components as Comp
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
 try:
-    from . import grok2api_image_backend, grok2api_video_backend, xai_image_backend, xai_video_backend
+    from . import (
+        grok2api_image_backend,
+        grok2api_video_backend,
+        openai_image_backend,
+        openai_video_backend,
+        xai_image_backend,
+        xai_video_backend,
+    )
 except ImportError:
     import grok2api_image_backend
     import grok2api_video_backend
+    import openai_image_backend
+    import openai_video_backend
     import xai_image_backend
     import xai_video_backend
 
@@ -133,8 +142,8 @@ class GrokPlugin(Star):
     MAX_STREAM_LINES = 10000
     MAX_RESPONSE_BYTES = 50 * 1024 * 1024
     MIN_BASE64_LENGTH = 100
-    IMAGE_TIMEOUT = 120
-    VIDEO_TIMEOUT = 900
+    IMAGE_TIMEOUT = 150
+    VIDEO_TIMEOUT = 300
     MAX_PROMPT_LENGTH = 4000
     MAX_REQUEST_RETRIES = 3
     RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -362,6 +371,10 @@ class GrokPlugin(Star):
             return text[:500]
 
         if isinstance(data, dict):
+            value = data.get("message")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
             error_obj = data.get("error")
             if isinstance(error_obj, dict):
                 message = str(error_obj.get("message", "")).strip()
@@ -379,7 +392,7 @@ class GrokPlugin(Star):
             elif isinstance(error_obj, str) and error_obj.strip():
                 return error_obj.strip()
 
-            for key in ("message", "detail", "error_description"):
+            for key in ("detail", "error_description"):
                 value = data.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
@@ -1151,6 +1164,16 @@ class GrokPlugin(Star):
         )
         return self.DEFAULT_VIDEO_RESOLUTION
 
+    def _get_configured_image_timeout_seconds(self) -> float:
+        try:
+            timeout = float(self.conf.get("grok_image_timeout_seconds", self.IMAGE_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = float(self.IMAGE_TIMEOUT)
+        if 30 <= timeout <= 600:
+            return timeout
+        logger.warning(f"图片请求超时配置无效: {timeout}, 已回退为 {self.IMAGE_TIMEOUT}")
+        return float(self.IMAGE_TIMEOUT)
+
     def _get_configured_video_aspect_ratio(self) -> Optional[str]:
         aspect_ratio = str(
             self.conf.get("grok_video_aspect_ratio", self.DEFAULT_VIDEO_ASPECT_RATIO)
@@ -1201,6 +1224,34 @@ class GrokPlugin(Star):
         )
         return self.DEFAULT_VIDEO_EXTENSION_DURATION_SECONDS
 
+    def _get_configured_video_timeout_seconds(self) -> float:
+        try:
+            timeout = float(self.conf.get("grok_video_timeout_seconds", self.VIDEO_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = float(self.VIDEO_TIMEOUT)
+        if 60 <= timeout <= 3600:
+            return timeout
+        logger.warning(f"视频轮询超时配置无效: {timeout}, 已回退为 {self.VIDEO_TIMEOUT}")
+        return float(self.VIDEO_TIMEOUT)
+
+    def _get_configured_video_poll_interval_seconds(self) -> float:
+        try:
+            interval = float(
+                self.conf.get(
+                    "grok_video_poll_interval_seconds",
+                    self.VIDEO_POLL_INTERVAL_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            interval = float(self.VIDEO_POLL_INTERVAL_SECONDS)
+        if 2 <= interval <= 10:
+            return interval
+        logger.warning(
+            f"视频轮询间隔配置无效: {interval}, "
+            f"已回退为 {self.VIDEO_POLL_INTERVAL_SECONDS}"
+        )
+        return float(self.VIDEO_POLL_INTERVAL_SECONDS)
+
     def _get_configured_video_output(self) -> Optional[Dict[str, str]]:
         upload_url = str(self.conf.get("grok_video_output_upload_url", "")).strip()
         if upload_url:
@@ -1216,7 +1267,11 @@ class GrokPlugin(Star):
     @staticmethod
     def _normalize_backend_type(value: Any) -> str:
         normalized = str(value or "").strip().lower()
-        return "grok2api" if normalized == "grok2api" else "xai"
+        if normalized == "grok2api":
+            return "grok2api"
+        if normalized in {"openai", "openai-sdk"}:
+            return "openai"
+        return "xai"
 
     def _get_configured_image_backend_type(self) -> str:
         return self._normalize_backend_type(self.conf.get("grok_image_backend_type", "xAI"))
@@ -1273,7 +1328,15 @@ class GrokPlugin(Star):
                 reference_images=reference_images,
             )
 
-        if self._get_configured_image_backend_type() == "grok2api":
+        backend = self._get_configured_image_backend_type()
+        if backend == "openai":
+            return await openai_image_backend.generate_image(
+                self,
+                prompt,
+                n=n,
+                target_size=target_size,
+            )
+        if backend == "grok2api":
             return await grok2api_image_backend.generate_image(
                 self,
                 prompt,
@@ -1297,6 +1360,15 @@ class GrokPlugin(Star):
     ) -> Tuple[List[Tuple[Optional[str], Optional[bytes]]], Optional[str]]:
         """按 UI 选择的图片后端分发到独立编辑模块。"""
         backend = self._get_configured_image_backend_type()
+        if backend == "openai":
+            return await openai_image_backend.edit_image(
+                self,
+                prompt,
+                image_bytes,
+                n=n,
+                target_size=target_size,
+                reference_images=reference_images,
+            )
         if backend == "grok2api":
             return await grok2api_image_backend.edit_image(
                 self,
@@ -1329,7 +1401,12 @@ class GrokPlugin(Star):
     ) -> Tuple[Optional[str], Optional[str]]:
         """按 UI 选择的视频后端分发到独立请求模块。"""
         backend = self._get_configured_video_backend_type()
-        video_backend = grok2api_video_backend if backend == "grok2api" else xai_video_backend
+        if backend == "openai":
+            video_backend = openai_video_backend
+        elif backend == "grok2api":
+            video_backend = grok2api_video_backend
+        else:
+            video_backend = xai_video_backend
         return await video_backend.generate_video(
             self,
             prompt,
@@ -1352,7 +1429,12 @@ class GrokPlugin(Star):
     ) -> Tuple[Optional[str], Optional[str]]:
         """按 UI 选择的视频后端分发到独立编辑模块。"""
         backend = self._get_configured_video_backend_type()
-        video_backend = grok2api_video_backend if backend == "grok2api" else xai_video_backend
+        if backend == "openai":
+            video_backend = openai_video_backend
+        elif backend == "grok2api":
+            video_backend = grok2api_video_backend
+        else:
+            video_backend = xai_video_backend
         return await video_backend.edit_video(
             self,
             prompt,
@@ -1371,7 +1453,12 @@ class GrokPlugin(Star):
     ) -> Tuple[Optional[str], Optional[str]]:
         """按 UI 选择的视频后端分发到独立扩展模块。"""
         backend = self._get_configured_video_backend_type()
-        video_backend = grok2api_video_backend if backend == "grok2api" else xai_video_backend
+        if backend == "openai":
+            video_backend = openai_video_backend
+        elif backend == "grok2api":
+            video_backend = grok2api_video_backend
+        else:
+            video_backend = xai_video_backend
         return await video_backend.extend_video(
             self,
             prompt,
@@ -2561,8 +2648,12 @@ class GrokPlugin(Star):
                     continue
 
                 parsed_size = self._parse_size_string(p)
-                if parsed_size and strict_size:
-                    params["invalid_size"] = self._format_size(parsed_size[0], parsed_size[1])
+                if parsed_size:
+                    parsed_value = self._format_size(parsed_size[0], parsed_size[1])
+                    if strict_size:
+                        params["invalid_size"] = parsed_value
+                    else:
+                        params["size"] = parsed_value
                     params["size_explicit"] = True
                     prompt_start = i + 1
                     found_size = True
@@ -2746,7 +2837,10 @@ class GrokPlugin(Star):
             else:
                 source_resolution = self._get_image_resolution(image_bytes)
                 if source_resolution:
-                    target_size = self._get_closest_supported_size(*source_resolution)
+                    if self._get_configured_image_backend_type() == "grok2api":
+                        target_size = self._format_size(*source_resolution)
+                    else:
+                        target_size = self._get_closest_supported_size(*source_resolution)
         else:
             target_size = requested_size
 
@@ -3110,6 +3204,7 @@ class GrokPlugin(Star):
             "• 分辨率支持 480p / 720p / 1080p，默认读取插件配置\n"
             "• xAI 后端单张图片默认作为首帧图生视频，提示词可省略\n"
             "• grok2api 后端上传图片会走 input_reference[] 参考图语义\n"
+            "• OpenAI 后端走 OpenAI SDK，生视频最多使用 1 个 input_reference\n"
             "• 多张图片会使用参考图视频模式；最多7张，最长10秒，提示词必填\n"
             "• 单张图可加“参考图”强制使用 reference_images 参考图模式\n"
             "• 图片输入支持附件、file_id:xxx 或 image_url:https://...\n\n"
@@ -3124,7 +3219,7 @@ class GrokPlugin(Star):
             "• 编辑: 根据提示修改输入视频\n"
             "• 扩展: 生成后续片段，时长支持 1-10 秒\n"
             "• 视频输入支持 mp4 URL、file_id 或消息中的视频附件\n\n"
-            "• 视频后端可在插件 UI 选择 xAI 或 grok2api；grok2api 当前仅支持生视频\n\n"
+            "• 视频后端可在插件 UI 选择 xAI、grok2api 或 OpenAI；grok2api 当前仅支持生视频\n\n"
             "示例:\n"
             "• /grok视频编辑 给人物添加银色项链 +视频\n"
             "• /grok视频扩展 6 镜头继续向前推进 +视频\n\n"

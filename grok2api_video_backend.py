@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -12,6 +13,7 @@ from astrbot.api import logger
 
 
 VIDEO_GENERATION_PATH = "/v1/videos"
+CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 VIDEO_MODEL = "grok-imagine-video"
 API_SCOPE = "video"
 SUPPORTED_SECONDS = (6, 10, 12, 16, 20)
@@ -36,6 +38,38 @@ def _configured_model(plugin: Any, config_key: str, default_model: str) -> str:
     if not configured or configured in xai_defaults:
         return default_model
     return configured
+
+
+def _is_parameter_error(status: int, detail: str, response_text: str = "") -> bool:
+    if status not in (400, 422):
+        return False
+    text = f"{detail}\n{response_text}".lower()
+    if any(token in text for token in ("api key", "unauthorized", "forbidden", "quota", "rate limit")):
+        return False
+    return any(
+        token in text
+        for token in (
+            "invalid_request_error",
+            "invalid_request",
+            "invalid_json",
+            "invalid_value",
+            "field required",
+            "missing",
+            "required",
+            "cannot unmarshal",
+            "unmarshal",
+            "validation",
+            "param=",
+            "must be",
+            "unsupported",
+            "not supported",
+            "seconds",
+            "size",
+            "resolution_name",
+            "preset",
+            "input_reference",
+        )
+    )
 
 
 def _nearest_supported_seconds(value: int) -> int:
@@ -112,6 +146,42 @@ def _data_url_to_bytes(value: str) -> Optional[Tuple[bytes, str]]:
         return None
 
 
+def _bytes_to_data_url(data: bytes, mime_type: str) -> str:
+    return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _normalize_media_url(plugin: Any, url: str) -> str:
+    value = str(url or "").strip()
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    if value.startswith("/"):
+        return f"{plugin._get_base_url(API_SCOPE)}{value}"
+    return value
+
+
+def _is_video_url_value(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    return stripped.startswith(("http://", "https://", "/"))
+
+
+def _extract_chat_video_url(plugin: Any, text: str) -> Optional[str]:
+    patterns = (
+        r'<(?:video|source)[^>]*src=["\']([^"\']+)["\']',
+        r'((?:/v1)?/files/video\?id=[^\s<>"\')\]]+)',
+        r'(https?://[^\s<>"\')\]]+)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        url = match.group(1).strip()
+        if url:
+            return _normalize_media_url(plugin, url)
+    return None
+
+
 async def _image_input_to_file(
     plugin: Any,
     image_input: Dict[str, str],
@@ -169,6 +239,37 @@ async def _collect_reference_files(
     return files, None
 
 
+def _build_chat_video_payload(
+    *,
+    model: str,
+    prompt: str,
+    seconds: int,
+    size: str,
+    resolution_name: str,
+    preset: str,
+    reference_files: List[Tuple[bytes, str, str]],
+) -> Dict[str, Any]:
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for payload, _filename, mime_type in reference_files:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": _bytes_to_data_url(payload, mime_type)},
+            }
+        )
+    return {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "user", "content": content if reference_files else prompt}],
+        "video_config": {
+            "seconds": seconds,
+            "size": size,
+            "resolution_name": resolution_name,
+            "preset": preset,
+        },
+    }
+
+
 def _extract_video_result_url(plugin: Any, data: Dict[str, Any]) -> Optional[str]:
     if not isinstance(data, dict):
         return None
@@ -177,16 +278,20 @@ def _extract_video_result_url(plugin: Any, data: Dict[str, Any]) -> Optional[str
     if isinstance(video_obj, dict):
         for key in ("url", "video_url", "media_url", "file_url"):
             value = video_obj.get(key)
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                return value
+            if _is_video_url_value(value):
+                return _normalize_media_url(plugin, value)
 
     for key in ("url", "video_url", "media_url", "file_url"):
         value = data.get(key)
-        if isinstance(value, str) and value.startswith(("http://", "https://")):
-            return value
+        if _is_video_url_value(value):
+            return _normalize_media_url(plugin, value)
 
-    url, _, _ = plugin._parse_json_response(data)
-    return url
+    url, _, text = plugin._parse_json_response(data)
+    if url:
+        return _normalize_media_url(plugin, url)
+    if text:
+        return plugin._extract_url_from_text(text) or _extract_chat_video_url(plugin, text)
+    return None
 
 
 def _extract_video_error(data: Dict[str, Any]) -> str:
@@ -201,11 +306,74 @@ def _extract_video_error(data: Dict[str, Any]) -> str:
     return str(message or "").strip()
 
 
+async def _post_chat_video_fallback(
+    plugin: Any,
+    *,
+    payload: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    api_url = plugin._build_api_url(CHAT_COMPLETIONS_PATH, API_SCOPE)
+    video_timeout = plugin._get_configured_video_timeout_seconds()
+    for attempt in range(plugin.MAX_REQUEST_RETRIES):
+        try:
+            session = await plugin._ensure_session()
+            headers = plugin._get_headers(API_SCOPE)
+            plugin._debug_log_request(
+                "生视频Chat回退[grok2api]",
+                "POST",
+                api_url,
+                headers=headers,
+                json_body=payload,
+                attempt=attempt + 1,
+            )
+            async with session.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=video_timeout),
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    plugin._log_error_response("生视频Chat回退[grok2api]", resp.status, text)
+                    detail = plugin._extract_api_error_message(text)
+                    if (
+                        plugin._is_retryable_status(resp.status)
+                        and attempt < plugin.MAX_REQUEST_RETRIES - 1
+                    ):
+                        await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                        continue
+                    return None, plugin._translate_error(detail or f"状态码: {resp.status}")
+
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.error(f"[生视频][grok2api] Chat 回退响应 JSON 解析失败: {text}")
+                    return None, "API响应格式异常"
+
+                video_url = _extract_video_result_url(plugin, data)
+                if video_url:
+                    return video_url, None
+                return None, "未能从 Chat 回退响应中提取视频 URL"
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            if attempt < plugin.MAX_REQUEST_RETRIES - 1:
+                await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                continue
+            return None, "请求超时，请重试"
+        except Exception as e:
+            if attempt < plugin.MAX_REQUEST_RETRIES - 1:
+                await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                continue
+            logger.error(f"[生视频][grok2api] Chat 回退请求异常: {e}")
+            return None, plugin._translate_error(str(e))
+
+    return None, "生视频Chat回退请求失败"
+
+
 async def _download_video_content(
     plugin: Any,
     video_id: str,
 ) -> Tuple[Optional[str], Optional[str]]:
     api_url = plugin._build_api_url(f"/v1/videos/{video_id}/content", API_SCOPE)
+    video_timeout = plugin._get_configured_video_timeout_seconds()
     try:
         session = await plugin._ensure_session()
         headers = plugin._get_auth_headers(API_SCOPE)
@@ -218,7 +386,7 @@ async def _download_video_content(
         async with session.get(
             api_url,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=plugin.VIDEO_TIMEOUT),
+            timeout=aiohttp.ClientTimeout(total=video_timeout),
         ) as resp:
             content = await resp.read()
             if resp.status != 200:
@@ -246,8 +414,14 @@ async def _poll_video_task(
     api_url = plugin._build_api_url(f"/v1/videos/{video_id}", API_SCOPE)
     started_at = time.monotonic()
     last_status = ""
+    poll_timeout = plugin._get_configured_video_timeout_seconds()
+    poll_interval = plugin._get_configured_video_poll_interval_seconds()
+    logger.info(
+        f"[生视频][grok2api] 开始轮询任务 {video_id}: "
+        f"interval={poll_interval:.1f}s, timeout={poll_timeout:.0f}s"
+    )
 
-    while time.monotonic() - started_at < plugin.VIDEO_TIMEOUT:
+    while time.monotonic() - started_at < poll_timeout:
         try:
             session = await plugin._ensure_session()
             headers = plugin._get_auth_headers(API_SCOPE)
@@ -267,7 +441,7 @@ async def _poll_video_task(
                     plugin._log_error_response("生视频轮询[grok2api]", resp.status, text)
                     detail = plugin._extract_api_error_message(text)
                     if plugin._is_retryable_status(resp.status):
-                        await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+                        await asyncio.sleep(poll_interval)
                         continue
                     return None, plugin._translate_error(detail or f"状态码: {resp.status}")
 
@@ -297,9 +471,9 @@ async def _poll_video_task(
                     detail = _extract_video_error(data)
                     return None, plugin._translate_error(detail or f"视频任务状态: {status}")
 
-                await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+                await asyncio.sleep(poll_interval)
         except (asyncio.TimeoutError, aiohttp.ClientError):
-            await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(poll_interval)
         except Exception as e:
             logger.error(f"[生视频][grok2api] 轮询异常: {e}")
             return None, plugin._translate_error(str(e))
@@ -393,6 +567,7 @@ async def generate_video(
 
     api_url = plugin._build_api_url(VIDEO_GENERATION_PATH, API_SCOPE)
     last_error: Optional[str] = None
+    video_timeout = plugin._get_configured_video_timeout_seconds()
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         attempt_started_at = time.monotonic()
         try:
@@ -410,7 +585,7 @@ async def generate_video(
                 api_url,
                 headers=headers,
                 data=build_form(),
-                timeout=aiohttp.ClientTimeout(total=plugin.VIDEO_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=video_timeout),
             ) as resp:
                 text = await resp.text()
                 if resp.status not in (200, 201, 202):
@@ -420,6 +595,20 @@ async def generate_video(
                     )
                     last_error = translated_error
                     plugin._log_error_response("生视频[grok2api]", resp.status, text)
+                    if _is_parameter_error(resp.status, detail, text):
+                        logger.warning("[生视频][grok2api] 专用接口参数错误，切换 /v1/chat/completions 回退")
+                        return await _post_chat_video_fallback(
+                            plugin,
+                            payload=_build_chat_video_payload(
+                                model=model,
+                                prompt=enhanced_prompt,
+                                seconds=seconds,
+                                size=size,
+                                resolution_name=resolution_name,
+                                preset=preset,
+                                reference_files=reference_files,
+                            ),
+                        )
                     if (
                         plugin._is_retryable_status(resp.status)
                         and attempt < plugin.MAX_REQUEST_RETRIES - 1
@@ -485,7 +674,7 @@ async def edit_video(
     user: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     del plugin, prompt, video_input, source_label, user
-    return None, "grok2api 后端未提供视频编辑接口，请将视频后端类型切换为 xAI"
+    return None, "grok2api 后端未提供视频编辑接口，请将视频后端类型切换为 xAI 或 OpenAI"
 
 
 async def extend_video(
@@ -497,4 +686,4 @@ async def extend_video(
     source_label: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     del plugin, prompt, video_input, duration, source_label
-    return None, "grok2api 后端未提供视频扩展接口，请将视频后端类型切换为 xAI"
+    return None, "grok2api 后端未提供视频扩展接口，请将视频后端类型切换为 xAI 或 OpenAI"

@@ -21,6 +21,7 @@ async def _post_json_with_retries(
     scene: str,
     response_format: Optional[str],
 ) -> Tuple[List[ImageResult], Optional[str], bool]:
+    image_timeout = plugin._get_configured_image_timeout_seconds()
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         try:
             session = await plugin._ensure_session()
@@ -37,7 +38,7 @@ async def _post_json_with_retries(
                 api_url,
                 headers=headers,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=plugin.IMAGE_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=image_timeout),
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()

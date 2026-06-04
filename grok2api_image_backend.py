@@ -1,17 +1,21 @@
 import asyncio
+import base64
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from astrbot.api import logger
 
-
 ImageResult = Tuple[Optional[str], Optional[bytes]]
 
 IMAGE_GENERATION_PATH = "/v1/images/generations"
 IMAGE_EDIT_PATH = "/v1/images/edits"
+CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 IMAGE_MODEL = "grok-imagine-image"
 IMAGE_EDIT_MODEL = "grok-imagine-image-edit"
+IMAGE_MODEL_FALLBACKS = [IMAGE_MODEL, "grok-imagine-image-pro", "grok-imagine-image-lite"]
+EDIT_IMAGE_MODEL_FALLBACKS = [IMAGE_EDIT_MODEL]
 EDIT_SIZE = "1024x1024"
 API_SCOPE = "image"
 
@@ -28,6 +32,180 @@ def _configured_model(plugin: Any, config_key: str, default_model: str) -> str:
     return configured
 
 
+def _is_parameter_error(status: int, detail: str, response_text: str = "") -> bool:
+    if status not in (400, 422):
+        return False
+    text = f"{detail}\n{response_text}".lower()
+    if any(token in text for token in ("api key", "unauthorized", "forbidden", "quota", "rate limit")):
+        return False
+    return any(
+        token in text
+        for token in (
+            "invalid_request_error",
+            "invalid_request",
+            "invalid_json",
+            "invalid_value",
+            "field required",
+            "missing",
+            "required",
+            "cannot unmarshal",
+            "unmarshal",
+            "validation",
+            "param=",
+            "must be",
+            "unsupported",
+            "not supported",
+            "image[]",
+            "response_format",
+            "size",
+            "n must",
+        )
+    )
+
+
+def _image_to_data_url(plugin: Any, image_bytes: bytes) -> str:
+    mime_type = plugin._detect_mime_type(image_bytes)
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _normalize_media_url(plugin: Any, url: str) -> str:
+    value = str(url or "").strip()
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    if value.startswith("/"):
+        return f"{plugin._get_base_url(API_SCOPE)}{value}"
+    return value
+
+
+def _extract_chat_media_url(plugin: Any, text: str) -> Optional[str]:
+    patterns = (
+        r'!\[[^\]]*\]\(([^)]+)\)',
+        r'<(?:img|video|source)[^>]*src=["\']([^"\']+)["\']',
+        r'((?:/v1)?/files/image\?id=[^\s<>"\')\]]+)',
+        r'(data:image/[^\s<>"\')\]]+)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        url = match.group(1).strip()
+        if url:
+            return _normalize_media_url(plugin, url)
+    return None
+
+
+def _parse_image_results(plugin: Any, data: Dict[str, Any]) -> List[ImageResult]:
+    results = plugin._parse_image_api_response(data)
+    if results:
+        normalized_results: List[ImageResult] = []
+        for url, image_bytes in results:
+            if image_bytes:
+                normalized_results.append((url, image_bytes))
+                continue
+            if not url:
+                normalized_results.append((url, image_bytes))
+                continue
+            normalized_url = _normalize_media_url(plugin, url)
+            if normalized_url.startswith("data:"):
+                b64_data = plugin._extract_base64_from_data_uri(normalized_url)
+                if b64_data:
+                    try:
+                        normalized_results.append((None, base64.b64decode(b64_data)))
+                    except Exception as e:
+                        logger.warning(f"[grok2api] 图片 data URI 解码失败: {e}")
+                continue
+            normalized_results.append((normalized_url, None))
+        return normalized_results
+
+    _, _, text = plugin._parse_json_response(data)
+    if not text:
+        return []
+
+    url = plugin._extract_url_from_text(text) or _extract_chat_media_url(plugin, text)
+    if url:
+        if url.startswith("data:"):
+            b64_data = plugin._extract_base64_from_data_uri(url)
+            if b64_data:
+                try:
+                    return [(None, base64.b64decode(b64_data))]
+                except Exception as e:
+                    logger.warning(f"[grok2api] Chat 回退图片 data URI 解码失败: {e}")
+            return []
+        return [(url, None)]
+
+    b64 = plugin._extract_base64_from_text(text)
+    if b64:
+        try:
+            return [(None, base64.b64decode(b64))]
+        except Exception as e:
+            logger.warning(f"[grok2api] Chat 回退图片 Base64 解码失败: {e}")
+    return []
+
+
+def _resolve_edit_size(plugin: Any, image_bytes: bytes, target_size: Optional[str]) -> str:
+    if target_size:
+        return target_size
+    source_resolution = plugin._get_image_resolution(image_bytes)
+    if source_resolution:
+        return plugin._format_size(*source_resolution)
+    return EDIT_SIZE
+
+
+def _build_chat_image_payload(
+    *,
+    model: str,
+    prompt: str,
+    n: int,
+    size: str,
+    response_format: Optional[str],
+) -> Dict[str, Any]:
+    image_config: Dict[str, Any] = {
+        "n": max(1, min(n, 10)),
+        "size": size,
+    }
+    if response_format:
+        image_config["response_format"] = response_format
+    return {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "user", "content": prompt}],
+        "image_config": image_config,
+    }
+
+
+def _build_chat_image_edit_payload(
+    plugin: Any,
+    *,
+    model: str,
+    prompt: str,
+    image_items: List[bytes],
+    n: int,
+    size: str,
+    response_format: Optional[str],
+) -> Dict[str, Any]:
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for item in image_items:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": _image_to_data_url(plugin, item)},
+            }
+        )
+    image_config: Dict[str, Any] = {
+        "n": max(1, min(n, 2)),
+        "size": size,
+    }
+    if response_format:
+        image_config["response_format"] = response_format
+    return {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "user", "content": content}],
+        "image_config": image_config,
+    }
+
+
 async def _post_json_with_retries(
     plugin: Any,
     *,
@@ -35,7 +213,8 @@ async def _post_json_with_retries(
     payload: Dict[str, Any],
     scene: str,
     response_format: Optional[str],
-) -> Tuple[List[ImageResult], Optional[str], bool]:
+) -> Tuple[List[ImageResult], Optional[str], bool, bool]:
+    image_timeout = plugin._get_configured_image_timeout_seconds()
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         try:
             session = await plugin._ensure_session()
@@ -52,7 +231,7 @@ async def _post_json_with_retries(
                 api_url,
                 headers=headers,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=plugin.IMAGE_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=image_timeout),
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
@@ -61,18 +240,19 @@ async def _post_json_with_retries(
                     translated_error = plugin._translate_error(
                         detail or f"状态码: {resp.status}"
                     )
+                    parameter_error = _is_parameter_error(resp.status, detail, text)
                     if response_format and plugin._is_response_format_related_error(detail):
                         logger.warning(
                             f"[{scene}][grok2api] 返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
-                        return [], translated_error, True
+                        return [], translated_error, True, False
                     if (
                         plugin._is_retryable_status(resp.status)
                         and attempt < plugin.MAX_REQUEST_RETRIES - 1
                     ):
                         await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                         continue
-                    return [], translated_error, False
+                    return [], translated_error, False, parameter_error
 
                 raw_content = await resp.read()
                 try:
@@ -80,26 +260,26 @@ async def _post_json_with_retries(
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     response_text = raw_content.decode("utf-8", errors="replace")
                     logger.error(f"[{scene}][grok2api] JSON解析失败，完整响应: {response_text}")
-                    return [], "API响应格式异常", False
+                    return [], "API响应格式异常", False, False
 
-                results = plugin._parse_image_api_response(data)
+                results = _parse_image_results(plugin, data)
                 if results:
-                    return results, None, False
-                return [], "未能从响应中提取图片", False
+                    return results, None, False, False
+                return [], "未能从响应中提取图片", False, False
 
         except (asyncio.TimeoutError, aiohttp.ClientError):
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
-            return [], "请求超时，请重试", False
+            return [], "请求超时，请重试", False, False
         except Exception as e:
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
             logger.error(f"[{scene}][grok2api] 请求异常: {e}")
-            return [], plugin._translate_error(str(e)), False
+            return [], plugin._translate_error(str(e)), False, False
 
-    return [], f"{scene}请求失败", False
+    return [], f"{scene}请求失败", False, False
 
 
 async def _post_form_with_retries(
@@ -110,7 +290,8 @@ async def _post_form_with_retries(
     form_debug: List[Dict[str, Any]],
     scene: str,
     response_format: Optional[str],
-) -> Tuple[List[ImageResult], Optional[str], bool]:
+) -> Tuple[List[ImageResult], Optional[str], bool, bool]:
+    image_timeout = plugin._get_configured_image_timeout_seconds()
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         try:
             session = await plugin._ensure_session()
@@ -127,7 +308,7 @@ async def _post_form_with_retries(
                 api_url,
                 headers=headers,
                 data=build_form(),
-                timeout=aiohttp.ClientTimeout(total=plugin.IMAGE_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=image_timeout),
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
@@ -136,9 +317,83 @@ async def _post_form_with_retries(
                     translated_error = plugin._translate_error(
                         detail or f"状态码: {resp.status}"
                     )
+                    parameter_error = _is_parameter_error(resp.status, detail, text)
                     if response_format and plugin._is_response_format_related_error(detail):
                         logger.warning(
                             f"[{scene}][grok2api] 返回格式不兼容，自动切换模式重试: {detail[:120]}"
+                        )
+                        return [], translated_error, True, False
+                    if (
+                        plugin._is_retryable_status(resp.status)
+                        and attempt < plugin.MAX_REQUEST_RETRIES - 1
+                    ):
+                        await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                        continue
+                    return [], translated_error, False, parameter_error
+
+                raw_content = await resp.read()
+                try:
+                    data = json.loads(raw_content.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    response_text = raw_content.decode("utf-8", errors="replace")
+                    logger.error(f"[{scene}][grok2api] JSON解析失败，完整响应: {response_text}")
+                    return [], "API响应格式异常", False, False
+
+                results = _parse_image_results(plugin, data)
+                if results:
+                    return results, None, False, False
+                return [], "未能从响应中提取图片", False, False
+
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            if attempt < plugin.MAX_REQUEST_RETRIES - 1:
+                await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                continue
+            return [], "请求超时，请重试", False, False
+        except Exception as e:
+            if attempt < plugin.MAX_REQUEST_RETRIES - 1:
+                await asyncio.sleep(plugin._retry_delay_seconds(attempt))
+                continue
+            logger.error(f"[{scene}][grok2api] 请求异常: {e}")
+            return [], plugin._translate_error(str(e)), False, False
+
+    return [], f"{scene}请求失败", False, False
+
+
+async def _post_chat_fallback(
+    plugin: Any,
+    *,
+    payload: Dict[str, Any],
+    scene: str,
+    response_format: Optional[str],
+) -> Tuple[List[ImageResult], Optional[str], bool]:
+    api_url = plugin._build_api_url(CHAT_COMPLETIONS_PATH, API_SCOPE)
+    image_timeout = plugin._get_configured_image_timeout_seconds()
+    for attempt in range(plugin.MAX_REQUEST_RETRIES):
+        try:
+            session = await plugin._ensure_session()
+            headers = plugin._get_headers(API_SCOPE)
+            plugin._debug_log_request(
+                f"{scene}Chat回退[grok2api]",
+                "POST",
+                api_url,
+                headers=headers,
+                json_body=payload,
+                attempt=attempt + 1,
+            )
+            async with session.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=image_timeout),
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    plugin._log_error_response(f"{scene}Chat回退[grok2api]", resp.status, text)
+                    detail = plugin._extract_api_error_message(text)
+                    translated_error = plugin._translate_error(detail or f"状态码: {resp.status}")
+                    if response_format and plugin._is_response_format_related_error(detail):
+                        logger.warning(
+                            f"[{scene}][grok2api] Chat 回退返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
                         return [], translated_error, True
                     if (
@@ -149,19 +404,16 @@ async def _post_form_with_retries(
                         continue
                     return [], translated_error, False
 
-                raw_content = await resp.read()
                 try:
-                    data = json.loads(raw_content.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    response_text = raw_content.decode("utf-8", errors="replace")
-                    logger.error(f"[{scene}][grok2api] JSON解析失败，完整响应: {response_text}")
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.error(f"[{scene}][grok2api] Chat 回退响应 JSON 解析失败: {text}")
                     return [], "API响应格式异常", False
 
-                results = plugin._parse_image_api_response(data)
+                results = _parse_image_results(plugin, data)
                 if results:
                     return results, None, False
-                return [], "未能从响应中提取图片", False
-
+                return [], "未能从 Chat 回退响应中提取图片", False
         except (asyncio.TimeoutError, aiohttp.ClientError):
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
@@ -171,10 +423,10 @@ async def _post_form_with_retries(
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
-            logger.error(f"[{scene}][grok2api] 请求异常: {e}")
+            logger.error(f"[{scene}][grok2api] Chat 回退请求异常: {e}")
             return [], plugin._translate_error(str(e)), False
 
-    return [], f"{scene}请求失败", False
+    return [], f"{scene}Chat回退请求失败", False
 
 
 async def generate_image(
@@ -188,7 +440,7 @@ async def generate_image(
     configured_model = _configured_model(plugin, "grok_image_model", IMAGE_MODEL)
     model = await plugin._resolve_model(
         configured_model=configured_model,
-        fallback_models=[IMAGE_MODEL, "grok-imagine-image-pro", "grok-imagine-image-lite"],
+        fallback_models=IMAGE_MODEL_FALLBACKS,
         scene="文生图",
         scope=API_SCOPE,
     )
@@ -206,14 +458,36 @@ async def generate_image(
             payload["response_format"] = response_format
 
         logger.info(f"[文生图][grok2api] 完整请求参数: {payload}")
-        results, error, switch_format = await _post_json_with_retries(
+        results, error, switch_format, parameter_error = await _post_json_with_retries(
             plugin,
             api_url=api_url,
             payload=payload,
             scene="文生图",
             response_format=response_format,
         )
-        if results or not switch_format:
+        if results:
+            return results, None
+        if parameter_error:
+            logger.warning("[文生图][grok2api] 专用接口参数错误，切换 /v1/chat/completions 回退")
+            fallback_results, fallback_error, fallback_switch_format = await _post_chat_fallback(
+                plugin,
+                payload=_build_chat_image_payload(
+                    model=model,
+                    prompt=prompt,
+                    n=n,
+                    size=image_size,
+                    response_format=response_format,
+                ),
+                scene="文生图",
+                response_format=response_format,
+            )
+            if fallback_results:
+                return fallback_results, None
+            if fallback_switch_format:
+                last_error = fallback_error
+                continue
+            return fallback_results, fallback_error
+        if not switch_format:
             return results, error
         last_error = error
 
@@ -233,7 +507,7 @@ async def edit_image(
     configured_model = _configured_model(plugin, "grok_edit_model", IMAGE_EDIT_MODEL)
     model = await plugin._resolve_model(
         configured_model=configured_model,
-        fallback_models=[IMAGE_EDIT_MODEL, IMAGE_MODEL],
+        fallback_models=EDIT_IMAGE_MODEL_FALLBACKS,
         scene="图生图",
         scope=API_SCOPE,
     )
@@ -250,11 +524,7 @@ async def edit_image(
         if not plugin._is_supported_edit_image_mime(mime_type):
             return [], "grok2api 图像编辑参考图仅支持 JPEG、PNG、WebP 格式"
 
-    if target_size and target_size != EDIT_SIZE:
-        logger.warning(
-            f"[图生图][grok2api] 当前后端编辑接口仅支持 {EDIT_SIZE}，"
-            f"已忽略请求尺寸: {target_size}"
-        )
+    edit_size = _resolve_edit_size(plugin, image_bytes, target_size)
 
     last_error: Optional[str] = None
     for response_format in plugin._get_image_response_format_candidates():
@@ -263,7 +533,7 @@ async def edit_image(
             form.add_field("model", model)
             form.add_field("prompt", prompt)
             form.add_field("n", str(max(1, min(n, 2))))
-            form.add_field("size", EDIT_SIZE)
+            form.add_field("size", edit_size)
             if response_format:
                 form.add_field("response_format", response_format)
             for index, item in enumerate(all_image_bytes, start=1):
@@ -281,7 +551,7 @@ async def edit_image(
             {"name": "model", "value": model},
             {"name": "prompt", "value": prompt},
             {"name": "n", "value": str(max(1, min(n, 2)))},
-            {"name": "size", "value": EDIT_SIZE},
+            {"name": "size", "value": edit_size},
         ]
         if response_format:
             form_debug.append({"name": "response_format", "value": response_format})
@@ -299,9 +569,9 @@ async def edit_image(
 
         logger.info(
             f"[图生图][grok2api] 请求参数: model={model}, references={len(all_image_bytes)}, "
-            f"size={EDIT_SIZE}"
+            f"size={edit_size}, image_field=image[]"
         )
-        results, error, switch_format = await _post_form_with_retries(
+        results, error, switch_format, parameter_error = await _post_form_with_retries(
             plugin,
             api_url=api_url,
             build_form=build_form,
@@ -309,7 +579,31 @@ async def edit_image(
             scene="图生图",
             response_format=response_format,
         )
-        if results or not switch_format:
+        if results:
+            return results, None
+        if parameter_error:
+            logger.warning("[图生图][grok2api] 专用接口参数错误，切换 /v1/chat/completions 回退")
+            fallback_results, fallback_error, fallback_switch_format = await _post_chat_fallback(
+                plugin,
+                payload=_build_chat_image_edit_payload(
+                    plugin,
+                    model=model,
+                    prompt=prompt,
+                    image_items=all_image_bytes,
+                    n=n,
+                    size=edit_size,
+                    response_format=response_format,
+                ),
+                scene="图生图",
+                response_format=response_format,
+            )
+            if fallback_results:
+                return fallback_results, None
+            if fallback_switch_format:
+                last_error = fallback_error
+                continue
+            return fallback_results, fallback_error
+        if not switch_format:
             return results, error
         last_error = error
 

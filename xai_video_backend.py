@@ -148,8 +148,14 @@ async def _poll_video_generation(
     api_url = plugin._build_api_url(f"/v1/videos/{request_id}", API_SCOPE)
     started_at = time.monotonic()
     last_status = ""
+    poll_timeout = plugin._get_configured_video_timeout_seconds()
+    poll_interval = plugin._get_configured_video_poll_interval_seconds()
+    logger.info(
+        f"[{scene}][xAI] 开始轮询任务 {request_id}: "
+        f"interval={poll_interval:.1f}s, timeout={poll_timeout:.0f}s"
+    )
 
-    while time.monotonic() - started_at < plugin.VIDEO_TIMEOUT:
+    while time.monotonic() - started_at < poll_timeout:
         try:
             session = await plugin._ensure_session()
             headers = plugin._get_headers(API_SCOPE)
@@ -169,7 +175,7 @@ async def _poll_video_generation(
                     plugin._log_error_response("生视频轮询[xAI]", resp.status, text)
                     detail = plugin._extract_api_error_message(text)
                     if plugin._is_retryable_status(resp.status):
-                        await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+                        await asyncio.sleep(poll_interval)
                         continue
                     return None, plugin._translate_error(detail or f"状态码: {resp.status}")
 
@@ -211,9 +217,9 @@ async def _poll_video_generation(
                     detail = _extract_video_error(data)
                     return None, plugin._translate_error(detail or f"视频任务状态: {status}")
 
-                await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+                await asyncio.sleep(poll_interval)
         except (asyncio.TimeoutError, aiohttp.ClientError):
-            await asyncio.sleep(plugin.VIDEO_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(poll_interval)
         except Exception as e:
             logger.error(f"[生视频][xAI] 轮询异常: {e}")
             return None, plugin._translate_error(str(e))
@@ -232,6 +238,7 @@ async def _start_video_task(
     last_error: Optional[str] = None
     request_payload = payload
     alias_compat_tried = False
+    video_timeout = plugin._get_configured_video_timeout_seconds()
 
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         attempt_started_at = time.monotonic()
@@ -250,7 +257,7 @@ async def _start_video_task(
                 api_url,
                 headers=headers,
                 json=request_payload,
-                timeout=aiohttp.ClientTimeout(total=plugin.VIDEO_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=video_timeout),
             ) as resp:
                 text = await resp.text()
                 if resp.status not in (200, 201, 202):

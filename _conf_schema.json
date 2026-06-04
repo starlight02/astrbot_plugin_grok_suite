@@ -19,11 +19,12 @@
     },
     "grok_image_backend_type": {
         "description": "生图后端类型",
-        "hint": "xAI 使用官方 JSON 请求；grok2api 使用 chenyme/grok2api 兼容请求",
+        "hint": "xAI 使用官方 JSON 请求；grok2api 使用 chenyme/grok2api 源码兼容请求；OpenAI 使用官方 SDK",
         "type": "string",
         "options": [
             "xAI",
-            "grok2api"
+            "grok2api",
+            "OpenAI"
         ],
         "default": "xAI"
     },
@@ -63,7 +64,7 @@
     },
     "grok_image_response_format": {
         "description": "图片响应格式",
-        "hint": "默认 b64_json，避免依赖 xAI 图片 CDN；auto 会在 base64 不兼容时自动降级 URL",
+        "hint": "适用于 xAI/grok2api/OpenAI 三种图片后端；默认 b64_json，避免依赖图片 URL/CDN；auto 会在 base64 不兼容时自动降级 URL；不影响视频",
         "type": "string",
         "options": [
             "b64_json",
@@ -72,13 +73,20 @@
         ],
         "default": "b64_json"
     },
+    "grok_image_timeout_seconds": {
+        "description": "图片请求超时时间（秒）",
+        "hint": "生图和图生图请求超时，支持 30-600 秒，默认 150",
+        "type": "int",
+        "default": 150
+    },
     "grok_video_backend_type": {
         "description": "视频后端类型",
-        "hint": "xAI 使用官方视频生成/编辑/扩展接口；grok2api 使用 /v1/videos 兼容接口，仅支持生视频",
+        "hint": "xAI 使用官方视频生成/编辑/扩展接口；grok2api 使用 /v1/videos 源码兼容接口，仅支持生视频；OpenAI 使用官方 SDK",
         "type": "string",
         "options": [
             "xAI",
-            "grok2api"
+            "grok2api",
+            "OpenAI"
         ],
         "default": "xAI"
     },
@@ -162,6 +170,18 @@
         "hint": "可选；填写后作为官方 output.upload_url 随视频生成/编辑/扩展请求发送",
         "type": "string",
         "default": ""
+    },
+    "grok_video_timeout_seconds": {
+        "description": "视频任务最长等待秒数",
+        "hint": "创建任务、下载和轮询共用的超时上限，支持 60-3600 秒，默认 300",
+        "type": "int",
+        "default": 300
+    },
+    "grok_video_poll_interval_seconds": {
+        "description": "视频轮询间隔秒数",
+        "hint": "异步视频任务状态查询间隔，支持 2-10 秒，默认 5；调大可减少后台轮询日志",
+        "type": "float",
+        "default": 5
     },
     "grok_video_extension_duration": {
         "description": "视频扩展时长",
