@@ -2835,11 +2835,18 @@ class GrokPlugin(Star):
             if size_explicit:
                 target_size = requested_size
             else:
-                source_resolution = self._get_image_resolution(image_bytes)
-                if source_resolution:
-                    if self._get_configured_image_backend_type() == "grok2api":
-                        target_size = self._format_size(*source_resolution)
-                    else:
+                if self._get_configured_image_backend_type() == "grok2api":
+                    source_resolution = self._get_image_resolution(image_bytes)
+                    if source_resolution:
+                        target_size = self._get_closest_supported_size(*source_resolution)
+                        logger.info(
+                            "[图生图][grok2api] 未显式指定尺寸，"
+                            f"按当前图片比例映射尺寸 "
+                            f"{self._format_size(*source_resolution)} -> {target_size}"
+                        )
+                else:
+                    source_resolution = self._get_image_resolution(image_bytes)
+                    if source_resolution:
                         target_size = self._get_closest_supported_size(*source_resolution)
         else:
             target_size = requested_size
@@ -3189,7 +3196,7 @@ class GrokPlugin(Star):
             "• 数量: 1-10 (默认1)\n"
             "• 比例: 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 等\n"
             "• 不传比例时默认 9:16 竖屏\n"
-            "• 可附带图片进行图生图，不传比例时自动匹配原图比例\n"
+            "• 可附带图片进行图生图，默认按当前图片比例映射到后端支持尺寸\n"
             "• 最多读取3张图，多图会作为官方 images 参考输入\n\n"
             "示例:\n"
             "• /grok生图 一只猫\n"

@@ -135,7 +135,7 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 ```
 
 说明：
-- 自动读取原图分辨率；grok2api 未显式指定尺寸时使用原图尺寸，xAI/OpenAI 会按后端支持范围映射
+- 未显式输入比例/尺寸时：按当前传入图片比例映射到后端支持尺寸
 - 支持数量参数，最多 10 张
 - 显式输入比例/尺寸时会覆盖自动匹配结果
 - 最多读取 3 张图片；多张图片会以官方 `images` 字段一起作为参考输入
@@ -224,7 +224,7 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | 功能 | 接口路径 | 请求格式 |
 |------|----------|----------|
 | 文生图 | `POST /v1/images/generations`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 JSON 发送 `size`、`response_format`；回退接口发送 `messages`、`image_config` |
-| 图生图 | `POST /v1/images/edits`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 multipart 按 grok2api 源码字段 `image[]` 发送；`size` 优先使用命令尺寸/比例，未指定时使用原图尺寸；回退接口发送 `messages`、`image_config` |
+| 图生图 | `POST /v1/images/edits`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 multipart 按 grok2api 源码字段 `image[]` 发送；`size` 显式输入时按命令传给后端，未指定时按当前传入图片比例映射到插件支持尺寸；回退接口发送 `messages`、`image_config` |
 | 生视频 | `POST /v1/videos` + `GET /v1/videos/{video_id}` + `GET /v1/videos/{video_id}/content`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 multipart 发送 `seconds`、`size`、`resolution_name`、`preset`、可选 `input_reference[]`；回退接口发送 `messages`、`video_config` |
 | 视频编辑 | 不支持 | grok2api 文档未提供视频编辑接口 |
 | 视频扩展 | 不支持 | grok2api 文档未提供视频扩展接口 |

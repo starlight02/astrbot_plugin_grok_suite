@@ -63,6 +63,36 @@ def _is_parameter_error(status: int, detail: str, response_text: str = "") -> bo
     )
 
 
+def _is_non_retryable_upstream_rejection(
+    status: int,
+    detail: str,
+    response_text: str = "",
+) -> bool:
+    if status not in (400, 403, 422, 451, 500, 502):
+        return False
+
+    text = f"{detail}\n{response_text}".lower()
+    if any(
+        token in text
+        for token in (
+            "content_policy",
+            "content policy",
+            "moderation",
+            "safety",
+            "unsafe",
+            "policy_violation",
+            "policy violation",
+            "blocked",
+            "rejected",
+            "not allowed",
+            "bad_response_status_code",
+            "openai_error",
+        )
+    ):
+        return True
+    return False
+
+
 def _image_to_data_url(plugin: Any, image_bytes: bytes) -> str:
     mime_type = plugin._detect_mime_type(image_bytes)
     encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -148,7 +178,9 @@ def _resolve_edit_size(plugin: Any, image_bytes: bytes, target_size: Optional[st
         return target_size
     source_resolution = plugin._get_image_resolution(image_bytes)
     if source_resolution:
-        return plugin._format_size(*source_resolution)
+        mapped_size = plugin._get_closest_supported_size(*source_resolution)
+        if mapped_size:
+            return mapped_size
     return EDIT_SIZE
 
 
@@ -246,6 +278,11 @@ async def _post_json_with_retries(
                             f"[{scene}][grok2api] 返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
                         return [], translated_error, True, False
+                    if _is_non_retryable_upstream_rejection(resp.status, detail, text):
+                        logger.warning(
+                            f"[{scene}][grok2api] 上游拒绝或审核拦截，停止重试: {detail[:120]}"
+                        )
+                        return [], translated_error, False, False
                     if (
                         plugin._is_retryable_status(resp.status)
                         and attempt < plugin.MAX_REQUEST_RETRIES - 1
@@ -323,6 +360,11 @@ async def _post_form_with_retries(
                             f"[{scene}][grok2api] 返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
                         return [], translated_error, True, False
+                    if _is_non_retryable_upstream_rejection(resp.status, detail, text):
+                        logger.warning(
+                            f"[{scene}][grok2api] 上游拒绝或审核拦截，停止重试: {detail[:120]}"
+                        )
+                        return [], translated_error, False, False
                     if (
                         plugin._is_retryable_status(resp.status)
                         and attempt < plugin.MAX_REQUEST_RETRIES - 1
@@ -396,6 +438,11 @@ async def _post_chat_fallback(
                             f"[{scene}][grok2api] Chat 回退返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
                         return [], translated_error, True
+                    if _is_non_retryable_upstream_rejection(resp.status, detail, text):
+                        logger.warning(
+                            f"[{scene}][grok2api] Chat 回退上游拒绝或审核拦截，停止重试: {detail[:120]}"
+                        )
+                        return [], translated_error, False
                     if (
                         plugin._is_retryable_status(resp.status)
                         and attempt < plugin.MAX_REQUEST_RETRIES - 1
