@@ -9,8 +9,19 @@ ImageResult = Tuple[Optional[str], Optional[bytes]]
 API_SCOPE = "image"
 OPENAI_IMAGE_MODEL = "gpt-image-1"
 OPENAI_EDIT_SIZE = "1024x1024"
-OPENAI_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536", "1792x1024", "1024x1792")
-OPENAI_EDIT_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+OPENAI_GPT_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+OPENAI_GPT_EDIT_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+OPENAI_DALL_E_3_IMAGE_SIZES = ("1024x1024", "1792x1024", "1024x1792")
+OPENAI_DALL_E_2_IMAGE_SIZES = ("1024x1024", "512x512", "256x256")
+OPENAI_GPT_IMAGE_QUALITY_BY_RESOLUTION = {
+    "1k": "medium",
+    "2k": "high",
+}
+DALL_E_3_QUALITY_BY_RESOLUTION = {
+    "1k": "standard",
+    "2k": "hd",
+}
+DALL_E_3_STYLES = {"natural", "vivid"}
 
 try:
     from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
@@ -101,6 +112,34 @@ def _parse_size(size: Optional[str]) -> Optional[Tuple[int, int]]:
     return (width, height) if width > 0 and height > 0 else None
 
 
+def _normalized_model_name(model: str) -> str:
+    return str(model or "").strip().lower()
+
+
+def _is_gpt_image_model(model: str) -> bool:
+    return _normalized_model_name(model).startswith(("gpt-image", "chatgpt-image"))
+
+
+def _openai_generate_size_candidates(model: str) -> Sequence[str]:
+    normalized_model = _normalized_model_name(model)
+    if _is_gpt_image_model(model):
+        return OPENAI_GPT_IMAGE_SIZES
+    if normalized_model == "dall-e-3":
+        return OPENAI_DALL_E_3_IMAGE_SIZES
+    if normalized_model == "dall-e-2":
+        return OPENAI_DALL_E_2_IMAGE_SIZES
+    return OPENAI_GPT_IMAGE_SIZES
+
+
+def _openai_edit_size_candidates(model: str) -> Sequence[str]:
+    normalized_model = _normalized_model_name(model)
+    if _is_gpt_image_model(model):
+        return OPENAI_GPT_EDIT_SIZES
+    if normalized_model == "dall-e-2":
+        return OPENAI_DALL_E_2_IMAGE_SIZES
+    return OPENAI_GPT_EDIT_SIZES
+
+
 def _closest_openai_image_size(size: Optional[str], candidates: Sequence[str]) -> str:
     if size in candidates:
         return str(size)
@@ -129,6 +168,29 @@ def _closest_openai_image_size(size: Optional[str], candidates: Sequence[str]) -
     return min(candidates, key=distance)
 
 
+def _openai_image_quality(plugin: Any, model: str) -> Optional[str]:
+    resolution = plugin._get_configured_image_resolution()
+    normalized_model = _normalized_model_name(model)
+    if _is_gpt_image_model(model):
+        return OPENAI_GPT_IMAGE_QUALITY_BY_RESOLUTION.get(resolution)
+    if normalized_model == "dall-e-3":
+        return DALL_E_3_QUALITY_BY_RESOLUTION.get(resolution)
+    return None
+
+
+def _openai_response_format_candidates(plugin: Any, model: str) -> Tuple[Optional[str], ...]:
+    if _is_gpt_image_model(model):
+        return (None,)
+    return plugin._get_image_response_format_candidates()
+
+
+def _openai_generation_style(plugin: Any, model: str) -> Optional[str]:
+    if _normalized_model_name(model) != "dall-e-3":
+        return None
+    style = str(plugin.conf.get("grok_image_style", "") or "").strip().lower()
+    return style if style in DALL_E_3_STYLES else None
+
+
 def _file_tuple(plugin: Any, item: bytes, index: int, *, prefix: str = "image") -> Tuple[str, bytes, str]:
     mime_type = plugin._detect_mime_type(item)
     ext = "jpg" if mime_type == "image/jpeg" else mime_type.rsplit("/", 1)[-1]
@@ -149,18 +211,24 @@ async def generate_image(
     model = _configured_image_model(plugin, "grok_image_model", OPENAI_IMAGE_MODEL)
     image_size = _closest_openai_image_size(
         target_size or plugin.DEFAULT_TEXT_IMAGE_SIZE,
-        OPENAI_IMAGE_SIZES,
+        _openai_generate_size_candidates(model),
     )
+    image_quality = _openai_image_quality(plugin, model)
+    image_style = _openai_generation_style(plugin, model)
     image_timeout = plugin._get_configured_image_timeout_seconds()
     last_error: Optional[str] = None
 
-    for response_format in plugin._get_image_response_format_candidates():
+    for response_format in _openai_response_format_candidates(plugin, model):
         params: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "n": max(1, min(n, plugin.MAX_IMAGE_COUNT)),
             "size": image_size,
         }
+        if image_quality:
+            params["quality"] = image_quality
+        if image_style:
+            params["style"] = image_style
         if response_format:
             params["response_format"] = response_format
 
@@ -241,11 +309,12 @@ async def edit_image(
         for index, item in enumerate(all_image_bytes, start=1)
     ]
     image_param: Any = image_files[0] if len(image_files) == 1 else image_files
-    image_size = _closest_openai_image_size(target_size, OPENAI_EDIT_SIZES)
+    image_size = _closest_openai_image_size(target_size, _openai_edit_size_candidates(model))
+    image_quality = _openai_image_quality(plugin, model)
     image_timeout = plugin._get_configured_image_timeout_seconds()
     last_error: Optional[str] = None
 
-    for response_format in plugin._get_image_response_format_candidates():
+    for response_format in _openai_response_format_candidates(plugin, model):
         params: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -253,6 +322,8 @@ async def edit_image(
             "n": max(1, min(n, 2)),
             "size": image_size,
         }
+        if image_quality:
+            params["quality"] = image_quality
         if response_format:
             params["response_format"] = response_format
 
@@ -262,6 +333,8 @@ async def edit_image(
             {"name": "n", "value": str(max(1, min(n, 2)))},
             {"name": "size", "value": image_size},
         ]
+        if image_quality:
+            form_debug.append({"name": "quality", "value": image_quality})
         if response_format:
             form_debug.append({"name": "response_format", "value": response_format})
         for index, item in enumerate(all_image_bytes, start=1):

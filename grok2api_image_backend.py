@@ -13,11 +13,14 @@ IMAGE_GENERATION_PATH = "/v1/images/generations"
 IMAGE_EDIT_PATH = "/v1/images/edits"
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 IMAGE_MODEL = "grok-imagine-image"
+IMAGE_MODEL_PRO = "grok-imagine-image-pro"
+IMAGE_MODEL_LITE = "grok-imagine-image-lite"
 IMAGE_EDIT_MODEL = "grok-imagine-image-edit"
-IMAGE_MODEL_FALLBACKS = [IMAGE_MODEL, "grok-imagine-image-pro", "grok-imagine-image-lite"]
+IMAGE_MODEL_FALLBACKS = [IMAGE_MODEL, IMAGE_MODEL_PRO, IMAGE_MODEL_LITE]
 EDIT_IMAGE_MODEL_FALLBACKS = [IMAGE_EDIT_MODEL]
 EDIT_SIZE = "1024x1024"
 API_SCOPE = "image"
+CHAT_ENTRYPOINT_MODES = {"chat", "chat_first", "chat-completions", "chat_completions"}
 
 
 def _configured_model(plugin: Any, config_key: str, default_model: str) -> str:
@@ -30,6 +33,30 @@ def _configured_model(plugin: Any, config_key: str, default_model: str) -> str:
     if not configured or configured in xai_defaults:
         return default_model
     return configured
+
+
+def _configured_generation_model(plugin: Any) -> str:
+    configured = str(plugin.conf.get("grok_image_model", "") or "").strip()
+    xai_defaults = {
+        getattr(plugin, "DEFAULT_IMAGE_MODEL", ""),
+        getattr(plugin, "DEFAULT_LEGACY_IMAGE_MODEL", ""),
+        getattr(plugin, "DEFAULT_LEGACY_EDIT_MODEL", ""),
+    }
+    if not configured or configured in xai_defaults:
+        if plugin._get_configured_image_resolution() == "2k":
+            return IMAGE_MODEL_PRO
+        return IMAGE_MODEL
+    return configured
+
+
+def _get_image_entrypoint(plugin: Any) -> str:
+    mode = str(plugin.conf.get("grok2api_image_entrypoint", "dedicated_first") or "").strip().lower()
+    if mode in CHAT_ENTRYPOINT_MODES:
+        return "chat"
+    if mode in {"", "dedicated", "dedicated_first", "images", "images_first", "auto"}:
+        return "dedicated_first"
+    logger.warning(f"[grok2api] 图片入口配置无效: {mode}, 已回退为 dedicated_first")
+    return "dedicated_first"
 
 
 def _is_parameter_error(status: int, detail: str, response_text: str = "") -> bool:
@@ -48,6 +75,9 @@ def _is_parameter_error(status: int, detail: str, response_text: str = "") -> bo
             "field required",
             "missing",
             "required",
+            "model name not specified",
+            "model name cannot be empty",
+            "model cannot be empty",
             "cannot unmarshal",
             "unmarshal",
             "validation",
@@ -201,6 +231,7 @@ def _build_chat_image_payload(
     return {
         "model": model,
         "stream": False,
+        "reasoning_effort": "none",
         "messages": [{"role": "user", "content": prompt}],
         "image_config": image_config,
     }
@@ -233,6 +264,7 @@ def _build_chat_image_edit_payload(
     return {
         "model": model,
         "stream": False,
+        "reasoning_effort": "none",
         "messages": [{"role": "user", "content": content}],
         "image_config": image_config,
     }
@@ -407,15 +439,17 @@ async def _post_chat_fallback(
     payload: Dict[str, Any],
     scene: str,
     response_format: Optional[str],
+    fallback: bool = True,
 ) -> Tuple[List[ImageResult], Optional[str], bool]:
     api_url = plugin._build_api_url(CHAT_COMPLETIONS_PATH, API_SCOPE)
     image_timeout = plugin._get_configured_image_timeout_seconds()
+    request_scene = f"{scene}Chat回退[grok2api]" if fallback else f"{scene}Chat[grok2api]"
     for attempt in range(plugin.MAX_REQUEST_RETRIES):
         try:
             session = await plugin._ensure_session()
             headers = plugin._get_headers(API_SCOPE)
             plugin._debug_log_request(
-                f"{scene}Chat回退[grok2api]",
+                request_scene,
                 "POST",
                 api_url,
                 headers=headers,
@@ -430,17 +464,17 @@ async def _post_chat_fallback(
             ) as resp:
                 text = await resp.text()
                 if resp.status != 200:
-                    plugin._log_error_response(f"{scene}Chat回退[grok2api]", resp.status, text)
+                    plugin._log_error_response(request_scene, resp.status, text)
                     detail = plugin._extract_api_error_message(text)
                     translated_error = plugin._translate_error(detail or f"状态码: {resp.status}")
                     if response_format and plugin._is_response_format_related_error(detail):
                         logger.warning(
-                            f"[{scene}][grok2api] Chat 回退返回格式不兼容，自动切换模式重试: {detail[:120]}"
+                            f"[{scene}][grok2api] Chat 返回格式不兼容，自动切换模式重试: {detail[:120]}"
                         )
                         return [], translated_error, True
                     if _is_non_retryable_upstream_rejection(resp.status, detail, text):
                         logger.warning(
-                            f"[{scene}][grok2api] Chat 回退上游拒绝或审核拦截，停止重试: {detail[:120]}"
+                            f"[{scene}][grok2api] Chat 上游拒绝或审核拦截，停止重试: {detail[:120]}"
                         )
                         return [], translated_error, False
                     if (
@@ -470,10 +504,10 @@ async def _post_chat_fallback(
             if attempt < plugin.MAX_REQUEST_RETRIES - 1:
                 await asyncio.sleep(plugin._retry_delay_seconds(attempt))
                 continue
-            logger.error(f"[{scene}][grok2api] Chat 回退请求异常: {e}")
+            logger.error(f"[{request_scene}] 请求异常: {e}")
             return [], plugin._translate_error(str(e)), False
 
-    return [], f"{scene}Chat回退请求失败", False
+    return [], f"{scene}Chat请求失败", False
 
 
 async def generate_image(
@@ -484,7 +518,7 @@ async def generate_image(
     target_size: Optional[str] = None,
 ) -> Tuple[List[ImageResult], Optional[str]]:
     api_url = plugin._build_api_url(IMAGE_GENERATION_PATH, API_SCOPE)
-    configured_model = _configured_model(plugin, "grok_image_model", IMAGE_MODEL)
+    configured_model = _configured_generation_model(plugin)
     model = await plugin._resolve_model(
         configured_model=configured_model,
         fallback_models=IMAGE_MODEL_FALLBACKS,
@@ -492,9 +526,31 @@ async def generate_image(
         scope=API_SCOPE,
     )
     image_size = target_size or plugin.DEFAULT_TEXT_IMAGE_SIZE
+    entrypoint = _get_image_entrypoint(plugin)
     last_error: Optional[str] = None
 
     for response_format in plugin._get_image_response_format_candidates():
+        if entrypoint == "chat":
+            results, error, switch_format = await _post_chat_fallback(
+                plugin,
+                payload=_build_chat_image_payload(
+                    model=model,
+                    prompt=prompt,
+                    n=n,
+                    size=image_size,
+                    response_format=response_format,
+                ),
+                scene="文生图",
+                response_format=response_format,
+                fallback=False,
+            )
+            if results:
+                return results, None
+            if switch_format:
+                last_error = error
+                continue
+            return results, error
+
         payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -572,9 +628,33 @@ async def edit_image(
             return [], "grok2api 图像编辑参考图仅支持 JPEG、PNG、WebP 格式"
 
     edit_size = _resolve_edit_size(plugin, image_bytes, target_size)
+    entrypoint = _get_image_entrypoint(plugin)
 
     last_error: Optional[str] = None
     for response_format in plugin._get_image_response_format_candidates():
+        if entrypoint == "chat":
+            results, error, switch_format = await _post_chat_fallback(
+                plugin,
+                payload=_build_chat_image_edit_payload(
+                    plugin,
+                    model=model,
+                    prompt=prompt,
+                    image_items=all_image_bytes,
+                    n=n,
+                    size=edit_size,
+                    response_format=response_format,
+                ),
+                scene="图生图",
+                response_format=response_format,
+                fallback=False,
+            )
+            if results:
+                return results, None
+            if switch_format:
+                last_error = error
+                continue
+            return results, error
+
         def build_form() -> aiohttp.FormData:
             form = aiohttp.FormData()
             form.add_field("model", model)

@@ -41,8 +41,10 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | `grok_image_backend_type` | 生图后端类型 | `xAI` | `xAI` / `grok2api` / `OpenAI` |
 | `grok_image_model` | 文生图 | `grok-imagine-image-quality` | `/v1/images/generations` |
 | `grok_edit_model` | 图生图 | `grok-imagine-image-quality` | `/v1/images/edits` |
-| `grok_image_resolution` | 图片分辨率 | `2k` | `/v1/images/generations` / `/v1/images/edits` |
-| `grok_image_response_format` | 图片响应格式 | `b64_json` | 适用于 xAI/grok2api/OpenAI 图片后端；`b64_json` / `auto` / `url` |
+| `grok_image_resolution` | 图片分辨率/质量 | `2k` | xAI 使用 `resolution`；OpenAI 映射为 `quality`；grok2api 默认模型下 `2k` 优先用 `grok-imagine-image-pro` |
+| `grok_image_style` | 图片风格 | `none` | 作为提示词风格增强；OpenAI DALL-E 3 的 `natural` / `vivid` 会额外作为 SDK `style` 发送 |
+| `grok_image_response_format` | 图片响应格式 | `b64_json` | 适用于 xAI/grok2api/OpenAI 图片后端；OpenAI GPT Image 固定不发送该参数 |
+| `grok2api_image_entrypoint` | grok2api 图片入口 | `dedicated_first` | `dedicated_first` / `chat` |
 | `grok_image_timeout_seconds` | 图片请求超时时间 | `150` | 生图/图生图 |
 | `grok_video_backend_type` | 视频后端类型 | `xAI` | `xAI` / `grok2api` / `OpenAI` |
 | `grok2api_video_preset` | grok2api 视频模式 | `custom` | `custom` / `fun` / `normal` / `spicy` |
@@ -67,7 +69,10 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 | 模型 | 类型 | 说明 |
 |------|------|------|
 | `grok-imagine-image-quality` | 图像生成/编辑 | 官方高质量图片模型 |
-| `grok-imagine-image` | 图像生成/编辑 | 官方图片模型 |
+| `grok-imagine-image-lite` | grok2api 图像生成 | grok2api Chat/Aurora 快速路径，不支持比例/质量控制 |
+| `grok-imagine-image` | 图像生成/编辑 | xAI 官方图片模型；grok2api 中对应 WebSocket speed 模式 |
+| `grok-imagine-image-pro` | grok2api 图像生成 | grok2api WebSocket quality/pro 模式 |
+| `grok-imagine-image-edit` | grok2api 图像编辑 | grok2api 图生图模型 |
 | `grok-imagine-1.0` / `grok-imagine-1.0-edit` | 图像生成/编辑 | 兼容部分第三方代理 |
 | `grok-imagine-video` | 视频生成/编辑/扩展 | 官方视频模型 |
 | `grok-imagine-1.0-video` | 视频生成 | 兼容部分第三方代理 |
@@ -223,8 +228,8 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 
 | 功能 | 接口路径 | 请求格式 |
 |------|----------|----------|
-| 文生图 | `POST /v1/images/generations`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 JSON 发送 `size`、`response_format`；回退接口发送 `messages`、`image_config` |
-| 图生图 | `POST /v1/images/edits`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 multipart 按 grok2api 源码字段 `image[]` 发送；`size` 显式输入时按命令传给后端，未指定时按当前传入图片比例映射到插件支持尺寸；回退接口发送 `messages`、`image_config` |
+| 文生图 | `POST /v1/images/generations`，参数错误时回退 `POST /v1/chat/completions`；`grok2api_image_entrypoint=chat` 时直接走 Chat | 专用接口 JSON 发送 `size`、`response_format`；Chat 接口发送 `model`、`stream=false`、`reasoning_effort=none`、`messages`、`image_config.n/size/response_format` |
+| 图生图 | `POST /v1/images/edits`，参数错误时回退 `POST /v1/chat/completions`；`grok2api_image_entrypoint=chat` 时直接走 Chat | 专用接口 multipart 按 grok2api 源码字段 `image[]` 发送；`size` 显式输入时按命令传给后端，未指定时按当前传入图片比例映射到插件支持尺寸；Chat 接口用 `messages[].content` 传 `text` + `image_url`，并发送 `image_config.n/size/response_format` |
 | 生视频 | `POST /v1/videos` + `GET /v1/videos/{video_id}` + `GET /v1/videos/{video_id}/content`，参数错误时回退 `POST /v1/chat/completions` | 专用接口 multipart 发送 `seconds`、`size`、`resolution_name`、`preset`、可选 `input_reference[]`；回退接口发送 `messages`、`video_config` |
 | 视频编辑 | 不支持 | grok2api 文档未提供视频编辑接口 |
 | 视频扩展 | 不支持 | grok2api 文档未提供视频扩展接口 |
@@ -234,13 +239,13 @@ Grok 全能插件：文生图、图生图、图生视频、视频编辑、视频
 
 | 功能 | SDK 调用 | 请求格式 |
 |------|----------|----------|
-| 文生图 | `client.images.generate(...)` | 发送 `model`、`prompt`、`n`、`size`、`response_format` |
-| 图生图 | `client.images.edit(...)` | 发送 `model`、`prompt`、`image`、`n`、`size`、`response_format` |
+| 文生图 | `client.images.generate(...)` | 发送 `model`、`prompt`、`n`、`size`、`quality`；DALL-E 3 的 `natural/vivid` 额外发送 `style`；非 GPT Image 可发送 `response_format` |
+| 图生图 | `client.images.edit(...)` | 发送 `model`、`prompt`、`image`、`n`、`size`、`quality`；非 GPT Image 可发送 `response_format` |
 | 生视频 | `client.videos.create(...)` + `retrieve(...)` + `download_content(...)` | 发送 `model`、`prompt`、`seconds`、`size`、可选单个 `input_reference` |
 | 视频编辑 | `client.videos.edit(...)` + `retrieve(...)` + `download_content(...)` | 发送 `prompt`、`video` |
 | 视频扩展 | `client.videos.extend(...)` + `retrieve(...)` + `download_content(...)` | 发送 `prompt`、`seconds`、`video` |
 
-OpenAI SDK 图片尺寸会映射到 SDK 支持的 `1024x1024` / `1536x1024` / `1024x1536` 等尺寸；视频时长会映射到 SDK 支持的 `4` / `8` / `12` 秒，扩展时长会映射到 `4` / `8` / `12` / `16` / `20` 秒。
+OpenAI SDK 图片尺寸会映射到 SDK 支持的 `1024x1024` / `1536x1024` / `1024x1536` 等尺寸；`grok_image_resolution` 会映射为图片质量参数：GPT Image 使用 `2k` -> `high`、`1k` -> `medium`，DALL-E 3 使用 `2k` -> `hd`、`1k` -> `standard`；`grok_image_style` 会作为提示词风格增强对所有 OpenAI 图片模型生效，DALL-E 3 的 `natural` / `vivid` 会额外作为 SDK 原生 `style` 参数发送。视频时长会映射到 SDK 支持的 `4` / `8` / `12` 秒，扩展时长会映射到 `4` / `8` / `12` / `16` / `20` 秒。
 
 ### 官方视频字段对照
 
@@ -258,7 +263,9 @@ OpenAI SDK 图片尺寸会映射到 SDK 支持的 `1024x1024` / `1536x1024` / `1
 
 视频编辑接口发送 `model`、`prompt`、`video`、可选 `output.upload_url`、可选 `user`。视频扩展接口发送 `model`、`prompt`、`video`、`duration`、可选 `output.upload_url`。
 
-图片响应格式由 `grok_image_response_format` 控制，三种图片后端都会生效：xAI 会在 JSON 请求中发送 `response_format`，grok2api 会在专用接口和 `/v1/chat/completions` 回退的 `image_config` 中发送，OpenAI 后端会传给 SDK `client.images.generate/edit(...)`。默认 `b64_json`，避免依赖图片 URL/CDN；选择 `auto` 会先请求 `b64_json`，如果后端明确报 `response_format` 不兼容再尝试 `url`，选择 `url` 则只请求 URL。该配置不影响视频。视频完成后插件会下载内容并作为本地视频文件发送；如果视频 URL 所在域名无法访问，需要使用可访问的代理/API 地址或配置官方 `output.upload_url`。
+图片响应格式由 `grok_image_response_format` 控制：xAI 会在 JSON 请求中发送 `response_format`，grok2api 会在专用接口和 `/v1/chat/completions` 的 `image_config` 中发送；OpenAI 后端对 GPT Image 固定不发送该参数并解析 SDK 返回的 base64，对 DALL-E 等非 GPT Image 模型才按配置发送。默认 `b64_json`，避免依赖图片 URL/CDN；选择 `auto` 会先请求 `b64_json`，如果后端明确报 `response_format` 不兼容再尝试 `url`，选择 `url` 则只请求 URL。该配置不影响视频。视频完成后插件会下载内容并作为本地视频文件发送；如果视频 URL 所在域名无法访问，需要使用可访问的代理/API 地址或配置官方 `output.upload_url`。
+
+grok2api 当前源码的 `ImageConfig` / `ImageGenerationRequest` / `ImageEditRequest` 只接收 `n`、`size`、`response_format`，没有 `quality` / `style` 字段；上游 xAI WebSocket 请求体里对应高质量控制是 `enable_pro`，由 `grok-imagine-image-pro` 模型触发。因此插件不会向 grok2api 发送 `quality` / `style` 参数，避免制造无效字段；高质量默认通过 `grok_image_resolution=2k` + 未显式配置 grok2api 模型时选择 `grok-imagine-image-pro` 实现。
 
 grok2api 视频接口的 `preset` 由 `grok2api_video_preset` 配置，默认 `custom`，可选 `fun`、`normal`、`spicy`。
 

@@ -78,6 +78,13 @@ def _extract_video_result_url(plugin: Any, data: Dict[str, Any]) -> Optional[str
             if isinstance(value, str) and value.startswith(("http://", "https://")):
                 return value
 
+    metadata_obj = data.get("metadata")
+    if isinstance(metadata_obj, dict):
+        for key in ("url", "video_url", "media_url", "file_url"):
+            value = metadata_obj.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+
     for key in ("url", "video_url", "media_url", "file_url"):
         value = data.get(key)
         if isinstance(value, str) and value.startswith(("http://", "https://")):
@@ -94,6 +101,14 @@ def _extract_video_result_duration(data: Dict[str, Any]) -> Optional[int]:
     video_obj = data.get("video")
     if isinstance(video_obj, dict):
         value = video_obj.get("duration")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+
+    metadata_obj = data.get("metadata")
+    if isinstance(metadata_obj, dict):
+        value = metadata_obj.get("duration")
         if isinstance(value, int):
             return value
         if isinstance(value, str) and value.strip().isdigit():
@@ -200,6 +215,10 @@ async def _poll_video_generation(
                             expected_duration=expected_duration,
                         )
                         return video_url, None
+                    logger.error(
+                        f"[{scene}][xAI] 任务 {request_id} 完成但未提取视频 URL，"
+                        f"完整响应: {json.dumps(data, ensure_ascii=False)}"
+                    )
                     return None, "任务完成但响应中未包含视频 URL"
 
                 if not status:

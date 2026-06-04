@@ -53,8 +53,8 @@
         "default": "grok-imagine-image-quality"
     },
     "grok_image_resolution": {
-        "description": "图片分辨率",
-        "hint": "xAI Imagine 图片生成/编辑分辨率，默认 2k",
+        "description": "图片分辨率/质量",
+        "hint": "xAI 使用 resolution；OpenAI GPT Image 映射为 quality（2k=high，1k=medium）；DALL-E 3 映射为 quality（2k=hd，1k=standard）；grok2api 默认模型下 2k 会优先使用 grok-imagine-image-pro；默认 2k",
         "type": "string",
         "options": [
             "1k",
@@ -62,9 +62,26 @@
         ],
         "default": "2k"
     },
+    "grok_image_style": {
+        "description": "图片风格",
+        "hint": "可选；会作为提示词风格增强，对 xAI/grok2api/OpenAI 生图和图生图生效；OpenAI DALL-E 3 的 natural/vivid 会额外作为 SDK style 参数发送",
+        "type": "string",
+        "options": [
+            "none",
+            "natural",
+            "vivid",
+            "anime",
+            "cinematic",
+            "photographic",
+            "oil_painting",
+            "watercolor",
+            "pixel_art"
+        ],
+        "default": "none"
+    },
     "grok_image_response_format": {
         "description": "图片响应格式",
-        "hint": "适用于 xAI/grok2api/OpenAI 三种图片后端；默认 b64_json，避免依赖图片 URL/CDN；auto 会在 base64 不兼容时自动降级 URL；不影响视频",
+        "hint": "适用于 xAI/grok2api/OpenAI 图片后端；OpenAI GPT Image 固定不发送 response_format；默认 b64_json，避免依赖图片 URL/CDN；auto 会在 base64 不兼容时自动降级 URL；不影响视频",
         "type": "string",
         "options": [
             "b64_json",
@@ -72,6 +89,16 @@
             "url"
         ],
         "default": "b64_json"
+    },
+    "grok2api_image_entrypoint": {
+        "description": "grok2api 图片入口",
+        "hint": "仅 grok2api 图片后端生效；dedicated_first 优先 /v1/images/*，参数错误时回退 Chat；chat 直接走 /v1/chat/completions",
+        "type": "string",
+        "options": [
+            "dedicated_first",
+            "chat"
+        ],
+        "default": "dedicated_first"
     },
     "grok_image_timeout_seconds": {
         "description": "图片请求超时时间（秒）",

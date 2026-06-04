@@ -59,6 +59,16 @@ class GrokPlugin(Star):
     DEFAULT_LEGACY_IMAGE_MODEL = "grok-imagine-1.0"
     DEFAULT_LEGACY_EDIT_MODEL = "grok-imagine-1.0-edit"
     SUPPORTED_IMAGE_RESOLUTIONS = ("1k", "2k")
+    IMAGE_STYLE_PROMPTS = {
+        "natural": "自然写实风格",
+        "vivid": "鲜明生动风格",
+        "anime": "动漫插画风格",
+        "cinematic": "电影感风格",
+        "photographic": "摄影写实风格",
+        "oil_painting": "油画风格",
+        "watercolor": "水彩风格",
+        "pixel_art": "像素艺术风格",
+    }
     DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
     DEFAULT_VIDEO_SIZE = "1280x720"      # 16:9 横构图
     DEFAULT_VIDEO_LENGTH_SECONDS = 8
@@ -263,11 +273,25 @@ class GrokPlugin(Star):
         if not raw_error:
             return "未知错误"
 
+        raw_error = self._strip_request_id(raw_error)
+        error_lower = raw_error.lower()
+
+        if any(
+            token in error_lower
+            for token in (
+                "violation_fee.grok.moderation",
+                "generated image rejected by content moderation",
+                "rejected by content moderation",
+                "content moderation",
+                "policy_violation",
+                "policy violation",
+            )
+        ):
+            return "内容被 Grok 安全审核拒绝，请调整提示词后重试"
+
         # 已经是中文，直接透传，避免二次翻译后信息丢失
         if any("\u4e00" <= c <= "\u9fff" for c in raw_error):
             return raw_error
-
-        error_lower = raw_error.lower()
 
         if "fail_to_fetch_task" in error_lower and "incorrect api key" in error_lower:
             return "视频任务认证失败：API密钥无效，或代理服务端上游视频 API Key 配置错误"
@@ -284,6 +308,13 @@ class GrokPlugin(Star):
 
         if "invalid_resolution" in error_lower or "resolution_name" in error_lower:
             return f"视频分辨率参数不合法: {raw_error}"
+
+        if (
+            "model name not specified" in error_lower
+            or "model name cannot be empty" in error_lower
+            or "model cannot be empty" in error_lower
+        ):
+            return "模型名称为空或未被后端识别，请检查模型配置或后端兼容性"
 
         # 处理 HTTP 状态码
         if "状态码: 401" in raw_error or "status: 401" in error_lower:
@@ -308,8 +339,8 @@ class GrokPlugin(Star):
             if "113" in raw_error:
                 return "无法连接到服务器"
 
-        # 提取末尾更有价值的片段
-        if ":" in raw_error:
+        # 提取末尾更有价值的片段。JSON 错误不能按冒号切，否则会截到 usage/cost 等字段值。
+        if ":" in raw_error and "{" not in raw_error and "}" not in raw_error:
             parts = raw_error.split(":")
             for part in reversed(parts):
                 part = part.strip()
@@ -317,6 +348,19 @@ class GrokPlugin(Star):
                     return part[:200]
 
         return raw_error[:200]
+
+    @staticmethod
+    def _strip_request_id(error: str) -> str:
+        """去掉代理错误中的 request id，避免冒号切片只剩请求号。"""
+        if not error:
+            return ""
+        cleaned = re.sub(
+            r"\s*\(request[-_ ]?id:\s*[^)]*\)",
+            "",
+            error,
+            flags=re.IGNORECASE,
+        )
+        return cleaned.strip()
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """确保 session 有效（线程安全）"""
@@ -356,6 +400,36 @@ class GrokPlugin(Star):
         return results
 
     @staticmethod
+    def _extract_nested_json_error_message(value: str) -> str:
+        """从代理包装的错误字符串里提取嵌套 JSON 错误信息。"""
+        if not value:
+            return ""
+
+        start = value.find("{")
+        end = value.rfind("}")
+        if start < 0 or end <= start:
+            return ""
+
+        nested_text = value[start:end + 1]
+        try:
+            nested_data = json.loads(nested_text)
+        except json.JSONDecodeError:
+            return ""
+
+        if not isinstance(nested_data, dict):
+            return ""
+
+        for key in ("error", "message", "detail", "error_description"):
+            nested_value = nested_data.get(key)
+            if isinstance(nested_value, str) and nested_value.strip():
+                return nested_value.strip()
+            if isinstance(nested_value, dict):
+                message = str(nested_value.get("message", "")).strip()
+                if message:
+                    return message
+        return ""
+
+    @staticmethod
     def _extract_api_error_message(raw_text: str) -> str:
         """从 API 错误响应中提取可读信息"""
         if not raw_text:
@@ -373,7 +447,8 @@ class GrokPlugin(Star):
         if isinstance(data, dict):
             value = data.get("message")
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                nested_message = GrokPlugin._extract_nested_json_error_message(value)
+                return nested_message or value.strip()
 
             error_obj = data.get("error")
             if isinstance(error_obj, dict):
@@ -382,7 +457,8 @@ class GrokPlugin(Star):
                 param = str(error_obj.get("param", "")).strip()
                 parts = []
                 if message:
-                    parts.append(message)
+                    nested_message = GrokPlugin._extract_nested_json_error_message(message)
+                    parts.append(nested_message or message)
                 if code and code not in message:
                     parts.append(f"code={code}")
                 if param and param not in message:
@@ -1152,6 +1228,21 @@ class GrokPlugin(Star):
             f"图片分辨率配置无效: {resolution}, 已回退为 {self.DEFAULT_IMAGE_RESOLUTION}"
         )
         return self.DEFAULT_IMAGE_RESOLUTION
+
+    def _get_configured_image_style_prompt(self) -> str:
+        style = str(self.conf.get("grok_image_style", "none") or "none").strip()
+        if not style or style.lower() in {"none", "default", "auto", "off"}:
+            return ""
+        normalized = style.lower().replace("-", "_").replace(" ", "_")
+        return self.IMAGE_STYLE_PROMPTS.get(normalized, style)
+
+    def _apply_image_style(self, prompt: str) -> str:
+        style_prompt = self._get_configured_image_style_prompt()
+        if not style_prompt:
+            return prompt
+        if style_prompt.lower() in prompt.lower():
+            return prompt
+        return f"{prompt}\n\n图像风格：{style_prompt}"
 
     def _get_configured_video_resolution(self) -> str:
         resolution = str(
@@ -2813,6 +2904,8 @@ class GrokPlugin(Star):
         if not prompt_text:
             yield event.plain_result("❌ 请输入提示词")
             return
+
+        prompt_text = self._apply_image_style(prompt_text)
 
         if len(prompt_text) > self.MAX_PROMPT_LENGTH:
             yield event.plain_result(f"❌ 提示词过长，最大支持 {self.MAX_PROMPT_LENGTH} 字符")
